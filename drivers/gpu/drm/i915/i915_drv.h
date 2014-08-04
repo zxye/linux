@@ -45,6 +45,7 @@
 #include <linux/hashtable.h>
 #include <linux/intel-iommu.h>
 #include <linux/kref.h>
+#include <linux/perf_event.h>
 #include <linux/pm_qos.h>
 
 /* General customization:
@@ -1636,6 +1637,29 @@ struct drm_i915_private {
 	 */
 	struct workqueue_struct *dp_wq;
 
+#ifdef CONFIG_PERF_EVENTS
+	struct {
+	    struct pmu pmu;
+	    spinlock_t lock;
+	    struct hrtimer timer;
+	    struct pt_regs dummy_regs;
+
+	    struct perf_event *exclusive_event;
+	    struct intel_context *specific_ctx;
+
+	    struct {
+		struct kref refcount;
+		struct drm_i915_gem_object *obj;
+		u32 gtt_offset;
+		u8 *addr;
+		u32 head;
+		u32 tail;
+		int format;
+		int format_size;
+	    } oa_buffer;
+	} oa_pmu;
+#endif
+
 	/* Old dri1 support infrastructure, beware the dragons ya fools entering
 	 * here! */
 	struct i915_dri1_state dri1;
@@ -2687,6 +2711,15 @@ int i915_parse_cmds(struct intel_engine_cs *ring,
 		    struct drm_i915_gem_object *batch_obj,
 		    u32 batch_start_offset,
 		    bool is_master);
+
+/* i915_oa_perf.c */
+#ifdef CONFIG_PERF_EVENTS
+extern void i915_oa_pmu_register(struct drm_device *dev);
+extern void i915_oa_pmu_unregister(struct drm_device *dev);
+#else
+static inline void i915_oa_pmu_register(struct drm_device *dev) {}
+static inline void i915_oa_pmu_unregister(struct drm_device *dev) {}
+#endif
 
 /* i915_suspend.c */
 extern int i915_save_state(struct drm_device *dev);
