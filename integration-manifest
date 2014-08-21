@@ -1,0 +1,16 @@
+origin/drm-intel-next-queued 3a5f87c286515c54ff5c52c3e64d0c522b7570c0
+	drm: fix plane rotation when restoring fbdev configuration
+origin/drm-intel-fixes 1a125d8a2c22b11741fc47d4ffcf7a5ffa044dd3
+	drm/i915: don't try to retrain a DP link on an inactive CRTC
+drm-upstream/drm-next 7963e9db1b1f842fdc53309baa8714d38e9f5681
+	Revert "drm: drop redundant drm_file->is_master"
+drm-upstream/drm-fixes c39502c5508fb0106167f80a037c444701faa65f
+	Merge branch 'drm-fixes-3.17' of git://people.freedesktop.org/~agd5f/linux
+origin/topic/core-stuff 14f476fa24e81d0beea1aa14d763102958518d60
+	drm: Use the type of the array element when reallocating
+origin/topic/vblank-rework 80b36f4386660ce59ee09e34f07c8a98857e2f38
+	arm: Use vblank_disable_and_save in drm_vblank_cleanup()
+sound-upstream/for-next a509574e5ea7b617268943526773ebf7e2d20a9b
+	ALSA: usb-audio: Whitespace cleanups for sound/usb/midi.*
+driver-core-upstream/driver-core-next 0542ad88fbdd81bbd53f48bff981a9867e0f0659
+	firmware loader: Fix _request_firmware_load() return val for fw load abort
