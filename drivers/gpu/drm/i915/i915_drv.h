@@ -994,7 +994,7 @@ struct intel_ilk_power_mgmt {
 	unsigned long last_time1;
 	unsigned long chipset_power;
 	u64 last_count2;
-	struct timespec last_time2;
+	u64 last_time2;
 	unsigned long gfx_power;
 	u8 corr;
 
@@ -1485,7 +1485,7 @@ struct drm_i915_private {
 		} hpd_mark;
 	} hpd_stats[HPD_NUM_PINS];
 	u32 hpd_event_bits;
-	struct timer_list hotplug_reenable_timer;
+	struct delayed_work hotplug_reenable_work;
 
 	struct i915_fbc fbc;
 	struct i915_drrs drrs;
@@ -2221,6 +2221,7 @@ extern unsigned long i915_mch_val(struct drm_i915_private *dev_priv);
 extern unsigned long i915_gfx_val(struct drm_i915_private *dev_priv);
 extern void i915_update_gfx_val(struct drm_i915_private *dev_priv);
 int vlv_force_gfx_clock(struct drm_i915_private *dev_priv, bool on);
+void intel_hpd_cancel_work(struct drm_i915_private *dev_priv);
 
 /* i915_irq.c */
 void i915_queue_hangcheck(struct drm_device *dev);
