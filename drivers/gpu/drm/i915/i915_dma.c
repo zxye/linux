@@ -1015,6 +1015,11 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	if (ret < 0)
 		goto out_free_priv;
 
+	/* Must at least be initialized before trying to pin any context
+	 * which i915_perf hooks into.
+	 */
+	i915_perf_init(dev);
+
 	intel_pm_setup(dev);
 
 	intel_runtime_pm_get(dev_priv);
@@ -1206,6 +1211,7 @@ int i915_driver_unload(struct drm_device *dev)
 		return ret;
 	}
 
+	i915_perf_fini(dev);
 	intel_power_domains_fini(dev_priv);
 
 	intel_gpu_ips_teardown();
@@ -1380,6 +1386,7 @@ const struct drm_ioctl_desc i915_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(I915_GEM_USERPTR, i915_gem_userptr_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(I915_GEM_CONTEXT_GETPARAM, i915_gem_context_getparam_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(I915_GEM_CONTEXT_SETPARAM, i915_gem_context_setparam_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(I915_PERF_OPEN, i915_perf_open_ioctl, DRM_RENDER_ALLOW),
 };
 
 int i915_max_ioctl = ARRAY_SIZE(i915_ioctls);
