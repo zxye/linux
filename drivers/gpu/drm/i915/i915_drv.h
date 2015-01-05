@@ -1511,6 +1511,13 @@ struct i915_workarounds {
 	u32 count;
 };
 
+#ifdef CONFIG_PERF_EVENTS
+struct i915_oa_reg {
+       u32 addr;
+       u32 value;
+};
+#endif
+
 struct drm_i915_private {
 	struct drm_device *dev;
 	struct kmem_cache *slab;
