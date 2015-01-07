@@ -970,6 +970,7 @@ struct i915_suspend_saved_registers {
 	u32 savePIPEB_LINK_N1;
 	u32 saveMCHBAR_RENDER_STANDBY;
 	u32 savePCH_PORT_HOTPLUG;
+	u16 saveGCDGMBUS;
 };
 
 struct vlv_s0ix_state {
@@ -2633,9 +2634,8 @@ void i915_vma_move_to_active(struct i915_vma *vma,
 int i915_gem_dumb_create(struct drm_file *file_priv,
 			 struct drm_device *dev,
 			 struct drm_mode_create_dumb *args);
-int i915_gem_dumb_map_offset(struct drm_file *file_priv,
-			     struct drm_device *dev, uint32_t handle,
-			     uint64_t *offset);
+int i915_gem_mmap_gtt(struct drm_file *file_priv, struct drm_device *dev,
+		      uint32_t handle, uint64_t *offset);
 /**
  * Returns true if seq1 is later than seq2.
  */
@@ -3212,6 +3212,11 @@ static inline unsigned long msecs_to_jiffies_timeout(const unsigned int m)
 	unsigned long j = msecs_to_jiffies(m);
 
 	return min_t(unsigned long, MAX_JIFFY_OFFSET, j + 1);
+}
+
+static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
+{
+        return min_t(u64, MAX_JIFFY_OFFSET, nsecs_to_jiffies64(n) + 1);
 }
 
 static inline unsigned long

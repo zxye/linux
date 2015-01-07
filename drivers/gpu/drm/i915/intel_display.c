@@ -4500,7 +4500,6 @@ static void ironlake_crtc_disable(struct drm_crtc *crtc)
 		ironlake_fdi_disable(crtc);
 
 		ironlake_disable_pch_transcoder(dev_priv, pipe);
-		intel_set_pch_fifo_underrun_reporting(dev_priv, pipe, true);
 
 		if (HAS_PCH_CPT(dev)) {
 			/* disable TRANS_DP_CTL */
@@ -4571,8 +4570,6 @@ static void haswell_crtc_disable(struct drm_crtc *crtc)
 
 	if (intel_crtc->config.has_pch_encoder) {
 		lpt_disable_pch_transcoder(dev_priv);
-		intel_set_pch_fifo_underrun_reporting(dev_priv, TRANSCODER_A,
-						      true);
 		intel_ddi_fdi_disable(crtc);
 	}
 
@@ -11467,10 +11464,12 @@ static int intel_crtc_set_config(struct drm_mode_set *set)
 		    to_intel_crtc(set->crtc)->config.has_audio)
 			config->mode_changed = true;
 
-		/* Force mode sets for any infoframe stuff */
-		if (pipe_config->has_infoframe ||
-		    to_intel_crtc(set->crtc)->config.has_infoframe)
-			config->mode_changed = true;
+		/*
+		 * Note we have an issue here with infoframes: current code
+		 * only updates them on the full mode set path per hw
+		 * requirements.  So here we should be checking for any
+		 * required changes and forcing a mode set.
+		 */
 	}
 
 	/* set_mode will free it in the mode_changed case */
