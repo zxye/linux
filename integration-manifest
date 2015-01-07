@@ -1,0 +1,18 @@
+origin/drm-intel-next-queued 565f3053661927d7c9b53ab3526a3756685896fa
+	drm/i915: Push vblank enable/disable past encoder->enable/disable
+origin/drm-intel-next-fixes b1940cd21c0f4abdce101253e860feff547291b0
+	Linux 3.19-rc3
+origin/drm-intel-fixes e3e6efcd638d3caa18d9e89f235c7d6fc32c1f0b
+	drm/i915: Fix mutex->owner inspection race under DEBUG_MUTEXES
+drm-upstream/drm-next 4e0cd68115620bc3236ff4e58e4c073948629b41
+	drm: sti: fix module compilation issue
+drm-upstream/drm-fixes 2f6bd4da08b5054ba933be6f7b17ed02ad6c4162
+	Merge tag 'amdkfd-fixes-2014-12-30' of git://people.freedesktop.org/~gabbayo/linux into linus
+origin/topic/core-stuff b710d754bd4f80be922c40d8c1231d20f8e55e09
+	drm: Make drm_read() more robust against multithreaded races
+origin/topic/atomic-core d482d6626ad71b0314de1a3ff8c02f6fd252f7f8
+	drm: Ensure universal_planes is set for atomic
+origin/topic/atomic-helpers 321ebf04dc7ab5c54d658f93db0ffe35277664ab
+	drm/atomic: Refcounting for plane_state->fb
+sound-upstream/for-next b2d8957f288e2e51085e7c468a05d5d98f0a785f
+	ALSA: sound/atmel/ac97c.c: Add device tree support
