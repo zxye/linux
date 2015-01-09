@@ -4079,6 +4079,11 @@ static long _perf_ioctl(struct perf_event *event, unsigned int cmd, unsigned lon
 	case PERF_EVENT_IOC_SET_BPF:
 		return perf_event_set_bpf_prog(event, arg);
 
+	case PERF_EVENT_IOC_FLUSH:
+		if (event->pmu->flush)
+			return event->pmu->flush(event);
+		return 0;
+
 	default:
 		return -ENOTTY;
 	}

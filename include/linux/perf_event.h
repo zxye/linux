@@ -305,6 +305,13 @@ struct pmu {
 	 * Free pmu-private AUX data structures
 	 */
 	void (*free_aux)		(void *aux); /* optional */
+
+	/*
+	 * Flush buffered samples (E.g. for pmu hardware that writes samples to
+	 * some intermediate buffer) userspace may need to explicitly ensure
+	 * such samples have been forwarded to perf.
+	 */
+	int (*flush)			(struct perf_event *event); /*optional */
 };
 
 /**
