@@ -1565,6 +1565,20 @@ struct i915_oa_reg {
        u32 addr;
        u32 value;
 };
+
+struct i915_oa_ops {
+	void (*flush_oa_snapshots)(struct drm_i915_private *dev_priv,
+				   bool skip_if_flushing);
+	void (*event_start)(struct perf_event *event, int flags);
+	void (*event_stop)(struct perf_event *event, int flags);
+	void (*update_oacontrol)(struct drm_i915_private *dev_priv);
+	void (*context_pin_notify)(struct drm_i915_private *dev_priv,
+				   struct intel_context *context);
+	void (*context_unpin_notify)(struct drm_i915_private *dev_priv,
+				     struct intel_context *context);
+	void (*context_switch_notify)(struct drm_i915_private *dev_priv,
+				      struct intel_engine_cs *ring);
+};
 #endif
 
 struct drm_i915_private {
@@ -1831,9 +1845,11 @@ struct drm_i915_private {
 
 		struct perf_event *exclusive_event;
 		struct intel_context *specific_ctx;
+		u32 specific_ctx_id;
 		bool event_active;
 
 		u64 period_exponent;
+		int profile;
 
 		struct {
 			struct drm_i915_gem_object *obj;
@@ -1843,8 +1859,11 @@ struct drm_i915_private {
 			u32 tail;
 			int format;
 			int format_size;
+			u32 last_ctx_id;
 			spinlock_t flush_lock;
 		} oa_buffer;
+
+		struct i915_oa_ops ops;
 	} oa_pmu;
 #endif
 
@@ -3012,11 +3031,15 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 				struct intel_context *context);
 void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 				  struct intel_context *context);
+void i915_oa_context_switch_notify(struct drm_i915_private *dev_priv,
+				   struct intel_engine_cs *ring);
 #else
 static inline void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 					      struct intel_context *context) {}
 static inline void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 					        struct intel_context *context) {}
+static inline void i915_oa_context_switch_notify(struct drm_i915_private *dev_priv,
+						 struct intel_engine_cs *ring) {}
 #endif
 
 /* i915_gem_evict.c */
