@@ -564,6 +564,20 @@ static void i915_dump_device_info(struct drm_i915_private *dev_priv)
 #undef SEP_COMMA
 }
 
+static void bdw_sseu_info_init(struct drm_device *dev)
+{
+	u32 eu_dis0, eu_dis1, eu_dis2;
+
+	eu_dis0 = I915_READ(GEN8_EU_DISABLE0);
+	eu_dis1 = I915_READ(GEN8_EU_DISABLE1);
+	eu_dis2 = I915_READ(GEN8_EU_DISABLE2);
+	eu_dis2 &= GEN8_EU_DIS2_S2_SS2_MASK;
+
+	info->eu_total = 72 - (hweight32(eu_dis0) +
+			hweight32(eu_dis1) +
+			hweight32(eu_dis2));
+}
+
 static void cherryview_sseu_info_init(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -758,7 +772,9 @@ static void intel_device_info_runtime_init(struct drm_device *dev)
 	}
 
 	/* Initialize slice/subslice/EU info */
-	if (IS_CHERRYVIEW(dev))
+	if (IS_BROADWELL(dev))
+		bdw_sseu_info_init(dev);
+	else if (IS_CHERRYVIEW(dev))
 		cherryview_sseu_info_init(dev);
 	else if (INTEL_INFO(dev)->gen >= 9)
 		gen9_sseu_info_init(dev);
