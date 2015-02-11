@@ -713,6 +713,7 @@ struct intel_device_info {
 
 	/* Slice/subslice/EU info */
 	u32 slice_mask;
+	u32 subslice_mask;
 	u8 slice_total;
 	u8 subslice_total;
 	u8 subslice_per_slice;

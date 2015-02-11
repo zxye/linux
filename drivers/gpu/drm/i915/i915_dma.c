@@ -168,6 +168,11 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		if (!value)
 			return -ENODEV;
 		break;
+	case I915_PARAM_SUBSLICE_MASK:
+		value = INTEL_INFO(dev_priv)->subslice_mask;
+		if (!value)
+			return -ENODEV;
+		break;
 	default:
 		DRM_DEBUG("Unknown parameter %d\n", param->param);
 		return -EINVAL;
@@ -576,6 +581,10 @@ static void bdw_sseu_info_init(struct drm_device *dev)
 	fuse2 = I915_READ(GEN8_FUSE2);
 	info->slice_mask = ((fuse2 & GEN8_F2_S_ENA_MASK) >>
 			    GEN8_F2_S_ENA_SHIFT);
+	info->subslice_mask = ((fuse2 & GEN8_F2_SS_DIS_MASK) >>
+			       GEN8_F2_SS_DIS_SHIFT);
+	info->subslice_mask ^= (GEN8_F2_SS_DIS_MASK >>
+				GEN8_F2_SS_DIS_SHIFT);
 
 	eu_dis0 = I915_READ(GEN8_EU_DISABLE0);
 	eu_dis1 = I915_READ(GEN8_EU_DISABLE1);
@@ -598,9 +607,11 @@ static void cherryview_sseu_info_init(struct drm_device *dev)
 
 	info->slice_total = 1;
 	info->slice_mask = 1;
+	info->subslice_mask = 0x3;
 
 	if (!(fuse & CHV_FGT_DISABLE_SS0)) {
 		info->subslice_per_slice++;
+		info->subslice_mask &= ~0x1;
 		eu_dis = fuse & (CHV_FGT_EU_DIS_SS0_R0_MASK |
 				 CHV_FGT_EU_DIS_SS0_R1_MASK);
 		info->eu_total += 8 - hweight32(eu_dis);
@@ -608,6 +619,7 @@ static void cherryview_sseu_info_init(struct drm_device *dev)
 
 	if (!(fuse & CHV_FGT_DISABLE_SS1)) {
 		info->subslice_per_slice++;
+		info->subslice_mask &= ~0x2;
 		eu_dis = fuse & (CHV_FGT_EU_DIS_SS1_R0_MASK |
 				 CHV_FGT_EU_DIS_SS1_R1_MASK);
 		info->eu_total += 8 - hweight32(eu_dis);
@@ -668,6 +680,7 @@ static void gen9_sseu_info_init(struct drm_device *dev)
 	info->subslice_per_slice = ss_max - hweight32(ss_disable);
 	info->subslice_total = info->slice_total *
 			       info->subslice_per_slice;
+	info->subslice_mask = ss_disable ^ ((2 << ss_max) - 1);
 
 	/*
 	 * Iterate through enabled slices and subslices to
