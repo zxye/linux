@@ -56,7 +56,15 @@ static int i915_getparam(struct drm_device *dev, void *data,
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	drm_i915_getparam_t *param = data;
-	int value;
+	union {
+		int integer;
+		struct {
+			u64 a;
+			u64 b;
+		} u64_pair;
+	} value;
+	size_t value_size = sizeof(int);
+	unsigned long flags;
 
 	switch (param->param) {
 	case I915_PARAM_IRQ_ACTIVE:
@@ -65,90 +73,97 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		/* Reject all old ums/dri params. */
 		return -ENODEV;
 	case I915_PARAM_CHIPSET_ID:
-		value = dev->pdev->device;
+		value.integer = dev->pdev->device;
 		break;
 	case I915_PARAM_HAS_GEM:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_NUM_FENCES_AVAIL:
-		value = dev_priv->num_fence_regs - dev_priv->fence_reg_start;
+		value.integer = dev_priv->num_fence_regs - dev_priv->fence_reg_start;
 		break;
 	case I915_PARAM_HAS_OVERLAY:
-		value = dev_priv->overlay ? 1 : 0;
+		value.integer = dev_priv->overlay ? 1 : 0;
 		break;
 	case I915_PARAM_HAS_PAGEFLIPPING:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_EXECBUF2:
 		/* depends on GEM */
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_BSD:
-		value = intel_ring_initialized(&dev_priv->ring[VCS]);
+		value.integer = intel_ring_initialized(&dev_priv->ring[VCS]);
 		break;
 	case I915_PARAM_HAS_BLT:
-		value = intel_ring_initialized(&dev_priv->ring[BCS]);
+		value.integer = intel_ring_initialized(&dev_priv->ring[BCS]);
 		break;
 	case I915_PARAM_HAS_VEBOX:
-		value = intel_ring_initialized(&dev_priv->ring[VECS]);
+		value.integer = intel_ring_initialized(&dev_priv->ring[VECS]);
 		break;
 	case I915_PARAM_HAS_RELAXED_FENCING:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_COHERENT_RINGS:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_EXEC_CONSTANTS:
-		value = INTEL_INFO(dev)->gen >= 4;
+		value.integer = INTEL_INFO(dev)->gen >= 4;
 		break;
 	case I915_PARAM_HAS_RELAXED_DELTA:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_GEN7_SOL_RESET:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_LLC:
-		value = HAS_LLC(dev);
+		value.integer = HAS_LLC(dev);
 		break;
 	case I915_PARAM_HAS_WT:
-		value = HAS_WT(dev);
+		value.integer = HAS_WT(dev);
 		break;
 	case I915_PARAM_HAS_ALIASING_PPGTT:
-		value = USES_PPGTT(dev);
+		value.integer = USES_PPGTT(dev);
 		break;
 	case I915_PARAM_HAS_WAIT_TIMEOUT:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_SEMAPHORES:
-		value = i915_semaphore_is_enabled(dev);
+		value.integer = i915_semaphore_is_enabled(dev);
 		break;
 	case I915_PARAM_HAS_PRIME_VMAP_FLUSH:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_SECURE_BATCHES:
-		value = capable(CAP_SYS_ADMIN);
+		value.integer = capable(CAP_SYS_ADMIN);
 		break;
 	case I915_PARAM_HAS_PINNED_BATCHES:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_EXEC_NO_RELOC:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_HAS_EXEC_HANDLE_LUT:
-		value = 1;
+		value.integer = 1;
 		break;
 	case I915_PARAM_CMD_PARSER_VERSION:
-		value = i915_cmd_parser_get_version();
+		value.integer = i915_cmd_parser_get_version();
 		break;
 	case I915_PARAM_HAS_COHERENT_PHYS_GTT:
-		value = 1;
+		value.integer = 1;
+		break;
+	case I915_PARAM_RCS_PERF_CORRELATION:
+		local_irq_save(flags);
+		value.u64_pair.a = perf_clock();
+		value.u64_pair.b = I915_READ64(RING_TIMESTAMP(RENDER_RING_BASE));
+		local_irq_restore(flags);
+		value_size = sizeof(value.u64_pair);
 		break;
 	default:
 		DRM_DEBUG("Unknown parameter %d\n", param->param);
 		return -EINVAL;
 	}
 
-	if (copy_to_user(param->value, &value, sizeof(int))) {
+	if (copy_to_user(param->value, &value, value_size)) {
 		DRM_ERROR("copy_to_user failed\n");
 		return -EFAULT;
 	}

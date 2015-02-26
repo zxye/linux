@@ -365,6 +365,7 @@ typedef struct drm_i915_irq_wait {
 #define I915_PARAM_HAS_WT     	 	 27
 #define I915_PARAM_CMD_PARSER_VERSION	 28
 #define I915_PARAM_HAS_COHERENT_PHYS_GTT 29
+#define I915_PARAM_RCS_PERF_CORRELATION  30
 
 typedef struct drm_i915_getparam {
 	int param;
