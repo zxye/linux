@@ -322,10 +322,16 @@ extern __weak const char *perf_pmu_name(void)
 	return "pmu";
 }
 
-static inline u64 perf_clock(void)
+static inline u64 __perf_clock(void)
 {
 	return local_clock();
 }
+
+u64 perf_clock(void)
+{
+	return __perf_clock();
+}
+EXPORT_SYMBOL_GPL(perf_clock);
 
 static inline struct perf_cpu_context *
 __get_cpu_context(struct perf_event_context *ctx)
@@ -425,7 +431,7 @@ static inline void __update_cgrp_time(struct perf_cgroup *cgrp)
 	struct perf_cgroup_info *info;
 	u64 now;
 
-	now = perf_clock();
+	now = __perf_clock();
 
 	info = this_cpu_ptr(cgrp->info);
 
@@ -1046,7 +1052,7 @@ static void perf_unpin_context(struct perf_event_context *ctx)
  */
 static void update_context_time(struct perf_event_context *ctx)
 {
-	u64 now = perf_clock();
+	u64 now = __perf_clock();
 
 	ctx->time += now - ctx->timestamp;
 	ctx->timestamp = now;
@@ -2563,7 +2569,7 @@ ctx_sched_in(struct perf_event_context *ctx,
 	if (likely(!ctx->nr_events))
 		return;
 
-	now = perf_clock();
+	now = __perf_clock();
 	ctx->timestamp = now;
 	perf_cgroup_set_timestamp(task, ctx);
 	/*
@@ -3929,7 +3935,7 @@ static void calc_timer_values(struct perf_event *event,
 {
 	u64 ctx_time;
 
-	*now = perf_clock();
+	*now = __perf_clock();
 	ctx_time = event->shadow_ctx_time + *now;
 	*enabled = ctx_time - event->tstamp_enabled;
 	*running = ctx_time - event->tstamp_running;
@@ -4600,7 +4606,7 @@ static void __perf_event_header__init_id(struct perf_event_header *header,
 	}
 
 	if (sample_type & PERF_SAMPLE_TIME)
-		data->time = perf_clock();
+		data->time = __perf_clock();
 
 	if (sample_type & (PERF_SAMPLE_ID | PERF_SAMPLE_IDENTIFIER))
 		data->id = primary_event_id(event);
@@ -5211,7 +5217,7 @@ static void perf_event_task(struct task_struct *task,
 			/* .ppid */
 			/* .tid  */
 			/* .ptid */
-			.time = perf_clock(),
+			.time = __perf_clock(),
 		},
 	};
 
@@ -5587,7 +5593,7 @@ static void perf_log_throttle(struct perf_event *event, int enable)
 			.misc = 0,
 			.size = sizeof(throttle_event),
 		},
-		.time		= perf_clock(),
+		.time		= __perf_clock(),
 		.id		= primary_event_id(event),
 		.stream_id	= event->id,
 	};
@@ -5644,7 +5650,7 @@ static int __perf_event_overflow(struct perf_event *event,
 	}
 
 	if (event->attr.freq) {
-		u64 now = perf_clock();
+		u64 now = __perf_clock();
 		s64 delta = now - hwc->freq_time_stamp;
 
 		hwc->freq_time_stamp = now;
@@ -6511,7 +6517,7 @@ static void task_clock_event_del(struct perf_event *event, int flags)
 
 static void task_clock_event_read(struct perf_event *event)
 {
-	u64 now = perf_clock();
+	u64 now = __perf_clock();
 	u64 delta = now - event->ctx->timestamp;
 	u64 time = event->ctx->time + delta;
 

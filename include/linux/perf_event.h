@@ -543,6 +543,8 @@ struct perf_output_handle {
 
 #ifdef CONFIG_PERF_EVENTS
 
+extern u64 perf_clock(void);
+
 extern int perf_pmu_register(struct pmu *pmu, const char *name, int type);
 extern void perf_pmu_unregister(struct pmu *pmu);
 
