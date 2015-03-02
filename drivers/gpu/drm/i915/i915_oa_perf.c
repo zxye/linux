@@ -500,9 +500,22 @@ static u32 gen8_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 
 		snapshot = oa_buf_base + (head & mask);
 
-		ctx_id = *(u32 *)(snapshot + 12);
+		//XXX: NB: don't mask lower 11 bits in execlist mode
+		ctx_id = *(u32 *)(snapshot + 8) & 0xfffff800;
 
 		if (dev_priv->oa_pmu.event_active) {
+			u32 report_id = *(u32 *)snapshot;
+			u32 reason = (report_id >> 19) & 0x3f;
+
+			/* XXX: how should we handle this!? - need to find out when this can happen */
+			if (!(report_id & (1<<25)))
+				pr_err("report: context id invalid\n");
+
+			if (reason & (1<<3))
+				pr_err("context switch report: ctx_id=%x\n", ctx_id);
+
+			if (dev_priv->oa_pmu.specific_ctx)
+				pr_err("matching: specific_ctx_id=%x, current=%x\n", dev_priv->oa_pmu.specific_ctx_id, ctx_id);
 
 			/* NB: For Gen 8 we handle per-context report filtering
 			 * ourselves instead of programming the OA unit with a
@@ -514,9 +527,16 @@ static u32 gen8_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 			 * switched-too context.
 			 */
 			if (!dev_priv->oa_pmu.specific_ctx ||
-			    (dev_priv->oa_pmu.specific_ctx_id == ctx_id ||
-			     (dev_priv->oa_pmu.specific_ctx_id !=
-			      dev_priv->oa_pmu.oa_buffer.last_ctx_id))) {
+			    (dev_priv->oa_pmu.specific_ctx_id &&
+			     ((dev_priv->oa_pmu.specific_ctx_id == ctx_id) ||
+			      (dev_priv->oa_pmu.specific_ctx_id !=
+			       dev_priv->oa_pmu.oa_buffer.last_ctx_id)))) {
+
+				if (dev_priv->oa_pmu.specific_ctx &&
+				    dev_priv->oa_pmu.specific_ctx_id != ctx_id &&
+				    !(reason & (1<<3))) {
+					pr_err("i915_oa: context switch seen, but not reported by OA\n");
+				}
 
 				forward_one_oa_snapshot_to_event(dev_priv,
 								 snapshot,
@@ -784,21 +804,27 @@ static int i915_oa_event_init(struct perf_event *event)
 	u64 profile;
 	int ret = 0;
 
-	if (event->attr.type != event->pmu->type)
+	if (event->attr.type != event->pmu->type) {
+		pr_err("%s: spurious event type\n", __func__);
 		return -ENOENT;
+	}
 
         if (event->attr.config & ~(I915_PERF_OA_CTX_ID_MASK |
 				   I915_PERF_OA_SINGLE_CONTEXT_ENABLE |
 				   I915_PERF_OA_PROFILE_MASK |
 				   I915_PERF_OA_FORMAT_MASK |
-				   I915_PERF_OA_TIMER_EXPONENT_MASK))
+				   I915_PERF_OA_TIMER_EXPONENT_MASK)) {
+		pr_err("%s: reserved config state non-zero\n", __func__);
 		return -EINVAL;
+	}
 
 	/* To avoid the complexity of having to accurately filter
 	 * counter snapshots and marshal to the appropriate client
 	 * we currently only allow exclusive access */
-	if (dev_priv->oa_pmu.oa_buffer.obj)
+	if (dev_priv->oa_pmu.oa_buffer.obj) {
+		pr_err("%s: busy\n", __func__);
 		return -EBUSY;
+	}
 
         profile = event->attr.config & I915_PERF_OA_PROFILE_MASK;
         profile >>= I915_PERF_OA_PROFILE_SHIFT;
@@ -825,15 +851,21 @@ static int i915_oa_event_init(struct perf_event *event)
 	} else if (IS_BROADWELL(dev_priv->dev)) {
 		int snapshot_size;
 
-		if (profile != I915_PERF_OA_PROFILE_3D)
+		if (profile != I915_PERF_OA_PROFILE_3D) {
+			pr_err("%s: non 3D profile\n", __func__);
 			return -EINVAL;
+		}
 
-		if (report_format >= ARRAY_SIZE(bdw_perf_format_sizes))
+		if (report_format >= ARRAY_SIZE(bdw_perf_format_sizes)) {
+			pr_err("%s: bad format\n", __func__);
 			return -EINVAL;
+		}
 
 		snapshot_size = bdw_perf_format_sizes[report_format];
-		if (snapshot_size < 0)
+		if (snapshot_size < 0) {
+			pr_err("%s: bad format\n", __func__);
 			return -EINVAL;
+		}
 
 		dev_priv->oa_pmu.oa_buffer.format_size = snapshot_size;
 	} else {
@@ -846,8 +878,10 @@ static int i915_oa_event_init(struct perf_event *event)
 	 * to pass a precise attr.sample_period. */
 	if (event->attr.freq ||
 	    (event->attr.sample_period != 0 &&
-	     event->attr.sample_period != 1))
+	     event->attr.sample_period != 1)) {
+		pr_err("%s: bad sample_period\n", __func__);
 		return -EINVAL;
+	}
 
 	if (event->attr.sample_period) {
 		u64 period_exponent = event->attr.config &
@@ -867,8 +901,10 @@ static int i915_oa_event_init(struct perf_event *event)
 	 * Programming a period of 160 nanoseconds would not be very
 	 * polite, so higher frequencies are reserved for root.
 	 */
-	if (dev_priv->oa_pmu.period_exponent < 15 && !CAP_SYS_ADMIN)
+	if (dev_priv->oa_pmu.period_exponent < 15 && !CAP_SYS_ADMIN) {
+		pr_err("%s: bad period exponent to low without root\n", __func__);
 		return -EACCES;
+	}
 
 	/* We bypass the default perf core perf_paranoid_cpu() ||
 	 * CAP_SYS_ADMIN check by using the PERF_PMU_CAP_IS_DEVICE
@@ -885,19 +921,29 @@ static int i915_oa_event_init(struct perf_event *event)
 		if (fd.file) {
 			dev_priv->oa_pmu.specific_ctx =
 				lookup_context(dev_priv, fd.file, ctx_id);
-		}
+			if (!dev_priv->oa_pmu.specific_ctx)
+				pr_err("%s: failed to lookup specific ctx\n", __func__);
+		} else
+			pr_err("%s: fdget for specific ctx failed\n", __func__);
+
+		if (!dev_priv->oa_pmu.specific_ctx)
+			return -EINVAL;
 	}
 
 	if (!dev_priv->oa_pmu.specific_ctx &&
-	    i915_oa_event_paranoid && !capable(CAP_SYS_ADMIN))
+	    i915_oa_event_paranoid && !capable(CAP_SYS_ADMIN)) {
+		pr_err("%s: only root can profile cross-context\n", __func__);
 		return -EACCES;
+	}
 
 	mutex_lock(&dev_priv->dev->struct_mutex);
 	ret = init_oa_buffer(event);
 	mutex_unlock(&dev_priv->dev->struct_mutex);
 
-	if (ret)
+	if (ret) {
+		pr_err("%s: init_oa_buffer failed\n", __func__);
 		return ret;
+	}
 
 	BUG_ON(dev_priv->oa_pmu.exclusive_event);
 	dev_priv->oa_pmu.exclusive_event = event;
@@ -1027,6 +1073,11 @@ static void gen8_event_start(struct perf_event *event, int flags)
 	u64 report_format = dev_priv->oa_pmu.oa_buffer.format;
 	u32 tail;
 
+	pr_err("%s\n", __func__);
+
+#warning "check if this is needed on BDW..."
+	I915_WRITE(GDT_CHICKEN_BITS, GT_NOA_ENABLE);
+
         if (dev_priv->oa_pmu.profile == I915_PERF_OA_PROFILE_3D) {
 		if (INTEL_INFO(dev_priv)->slice_mask & 0x1) {
 			int n = ARRAY_SIZE(bdw_profile_3d_noa_slice0_mux_config);
@@ -1051,9 +1102,12 @@ static void gen8_event_start(struct perf_event *event, int flags)
 		struct intel_context *ctx = dev_priv->oa_pmu.specific_ctx;
 		struct drm_i915_gem_object *obj = ctx->legacy_hw_ctx.rcs_state;
 
-		if (i915_gem_obj_is_pinned(obj))
+		if (i915_gem_obj_is_pinned(obj)) {
 			dev_priv->oa_pmu.specific_ctx_id =
 				i915_gem_obj_ggtt_offset(obj);
+			pr_err("i915_oa: specific_ctx_id=%x\n", dev_priv->oa_pmu.specific_ctx_id);
+		} else
+		    pr_err("%s: specific context not currently pinned\n", __func__);
 	}
 
 	/* XXX: Although BDW supports explicitly specifying a
@@ -1198,6 +1252,8 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 
 		dev_priv->oa_pmu.specific_ctx_id =
 			i915_gem_obj_ggtt_offset(obj);
+#warning "if a specific ctx is pinned with a new address, we may need to flush the oabuffer in case it refers to the old id"
+		pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
 	}
 
 	if (dev_priv->oa_pmu.ops.context_pin_notify)
@@ -1223,8 +1279,10 @@ void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, flags);
 
-	if (dev_priv->oa_pmu.specific_ctx == context)
+	if (dev_priv->oa_pmu.specific_ctx == context) {
+		pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
 		dev_priv->oa_pmu.specific_ctx_id = 0;
+	}
 
 	if (dev_priv->oa_pmu.ops.context_unpin_notify)
 		dev_priv->oa_pmu.ops.context_unpin_notify(dev_priv, context);
