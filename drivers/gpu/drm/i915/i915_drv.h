@@ -2030,6 +2030,8 @@ struct drm_i915_private {
 	struct {
 		bool initialized;
 
+		struct ctl_table_header *sysctl_header;
+
 		struct mutex lock;
 		struct list_head streams;
 
