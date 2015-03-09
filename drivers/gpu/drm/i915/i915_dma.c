@@ -591,24 +591,82 @@ static void i915_dump_device_info(struct drm_i915_private *dev_priv)
 
 static void bdw_sseu_info_init(struct drm_device *dev)
 {
-	u32 fuse2, eu_dis0, eu_dis1, eu_dis2;
+	const int s_max = 2, ss_max = 3, eu_max = 8;
+	int s, ss;
+	u32 fuse2, eu_dis0, eu_dis1, eu_disable[s_max], s_enable, ss_disable;
 
 	fuse2 = I915_READ(GEN8_FUSE2);
-	info->slice_mask = ((fuse2 & GEN8_F2_S_ENA_MASK) >>
-			    GEN8_F2_S_ENA_SHIFT);
-	info->subslice_mask = ((fuse2 & GEN8_F2_SS_DIS_MASK) >>
-			       GEN8_F2_SS_DIS_SHIFT);
-	info->subslice_mask ^= (GEN8_F2_SS_DIS_MASK >>
-				GEN8_F2_SS_DIS_SHIFT);
+	s_enable = (fuse2 & GEN8_F2_S_ENA_MASK) >>
+		    GEN8_F2_S_ENA_SHIFT;
+	ss_disable = (fuse2 & GEN8_F2_SS_DIS_MASK) >>
+		      GEN8_F2_SS_DIS_SHIFT;
 
 	eu_dis0 = I915_READ(GEN8_EU_DISABLE0);
 	eu_dis1 = I915_READ(GEN8_EU_DISABLE1);
-	eu_dis2 = I915_READ(GEN8_EU_DISABLE2);
-	eu_dis2 &= GEN8_EU_DIS2_S2_SS2_MASK;
+	eu_disable[0] = eu_dis0 & GEN8_EU_DIS0_S0_MASK;
+	eu_disable[1] = (eu_dis0 & GEN8_EU_DIS0_S1_MASK) >> 8;
+	eu_disable[1] |= (eu_dis1 & GEN8_EU_DIS1_S1_MASK);
 
-	info->eu_total = 72 - (hweight32(eu_dis0) +
-			       hweight32(eu_dis1) +
-			       hweight32(eu_dis2));
+	info->slice_total = hweight32(s_enable);
+	info->slice_mask = s_enable;
+	info->subslice_mask = ss_disable;
+	info->subslice_mask ^= (GEN8_F2_SS_DIS_MASK >>
+				GEN8_F2_SS_DIS_SHIFT);
+
+	/*
+	 * The subslice disable field is global, i.e. it applies
+	 * to each of the enabled slices.
+	 */
+	info->subslice_per_slice = ss_max - hweight32(ss_disable);
+	info->subslice_total = info->slice_total * info->subslice_per_slice;
+
+	/*
+	 * Iterate through enabled slices and subslices to
+	 * count the total enabled EU.
+	 */
+	for (s = 0; s < s_max; s++) {
+		if (!(s_enable & (0x1 << s)))
+			/* skip disabled slice */
+			continue;
+
+		for (ss = 0; ss < ss_max; ss++) {
+			u32 n_disabled;
+
+			if (ss_disable & (0x1 << ss))
+				/* skip disabled subslice */
+				continue;
+
+			n_disabled = hweight8(eu_disable[s] >> (ss * eu_max));
+
+			/*
+			 * Record which subslice(s) has(have) 7 EUs. we
+			 * can tune the hash used to spread work among
+			 * subslices if they are unbalanced.
+			 */
+			if (eu_max - n_disabled == 7)
+				info->subslice_7eu[s] |= 1 << ss;
+
+			info->eu_total += eu_max - n_disabled;
+		}
+	}
+
+	/*
+	 * BDW is expected to always have a uniform distribution
+	 * of EU across subslices with the exception that any one
+	 * EU in any one subslice may be fused off for die
+	 * recovery.
+	 */
+	info->eu_per_subslice = info->subslice_total ?
+		DIV_ROUND_UP(info->eu_total,
+				info->subslice_total) : 0;
+	/*
+	 * BDW supports slice power gating on devices with more than
+	 * one slice, and supports EU power gating on devices with
+	 * more than one EU pair per subslice.
+	 */
+	info->has_slice_pg = (info->slice_total > 1) ? 1 : 0;
+	info->has_subslice_pg = 0;
+	info->has_eu_pg = (info->eu_per_subslice > 2) ? 1 : 0;
 }
 
 static void cherryview_sseu_info_init(struct drm_device *dev)
