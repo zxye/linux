@@ -77,7 +77,7 @@ static int i915_getparam(struct drm_device *dev, void *data,
 		value.integer = dev->pdev->device;
 		break;
 	case I915_PARAM_REVISION:
-		value = dev->pdev->revision;
+		value.integer = dev->pdev->revision;
 		break;
 	case I915_PARAM_HAS_GEM:
 		value.integer = 1;
