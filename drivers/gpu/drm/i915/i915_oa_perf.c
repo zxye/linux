@@ -402,6 +402,7 @@ static int i915_oa_event_init(struct perf_event *event)
 		return -ENOENT;
 
         if (event->attr.config & ~(I915_PERF_OA_CTX_ID_MASK |
+				   I915_PERF_OA_SINGLE_CONTEXT_ENABLE |
 				   I915_PERF_OA_PROFILE_MASK |
 				   I915_PERF_OA_FORMAT_MASK |
 				   I915_PERF_OA_TIMER_EXPONENT_MASK))
