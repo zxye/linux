@@ -176,8 +176,7 @@ static void i915_oa_event_destroy(struct perf_event *event)
 	BUG_ON(i915->oa_pmu.exclusive_event != event);
 	i915->oa_pmu.exclusive_event = NULL;
 
-	intel_uncore_forcewake_put(i915, FORCEWAKE_ALL);
-	intel_runtime_pm_put(i915);
+	gen6_gt_force_wake_put(i915, FORCEWAKE_ALL);
 }
 
 static void *vmap_oa_buffer(struct drm_i915_gem_object *obj)
@@ -425,12 +424,11 @@ static int i915_oa_event_init(struct perf_event *event)
 	 *   This can be achieved by programming MMIO registers as
 	 *   0xA094=0 and 0xA090[31]=1"
 	 *
-	 *   In our case we are expected that taking pm + FORCEWAKE
-	 *   references will effectively disable RC6 and trunk clock
+	 *   In our case we are expected that taking a FORCEWAKE
+	 *   reference will effectively disable RC6 and trunk clock
 	 *   gating.
 	 */
-	intel_runtime_pm_get(dev_priv);
-	intel_uncore_forcewake_get(dev_priv, FORCEWAKE_ALL);
+	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
 
 	return 0;
 }
