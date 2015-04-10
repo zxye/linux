@@ -591,10 +591,13 @@ static void i915_dump_device_info(struct drm_i915_private *dev_priv)
 
 static void bdw_sseu_info_init(struct drm_device *dev)
 {
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_device_info *info;
 	const int s_max = 2, ss_max = 3, eu_max = 8;
 	int s, ss;
 	u32 fuse2, eu_dis0, eu_dis1, eu_disable[s_max], s_enable, ss_disable;
 
+	info = (struct intel_device_info *)&dev_priv->info;
 	fuse2 = I915_READ(GEN8_FUSE2);
 	s_enable = (fuse2 & GEN8_F2_S_ENA_MASK) >>
 		    GEN8_F2_S_ENA_SHIFT;
