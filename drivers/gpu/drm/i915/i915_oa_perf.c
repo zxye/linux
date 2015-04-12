@@ -1253,7 +1253,7 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 		dev_priv->oa_pmu.specific_ctx_id =
 			i915_gem_obj_ggtt_offset(obj);
 #warning "if a specific ctx is pinned with a new address, we may need to flush the oabuffer in case it refers to the old id"
-		pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
+		//pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
 	}
 
 	if (dev_priv->oa_pmu.ops.context_pin_notify)
@@ -1280,7 +1280,7 @@ void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, flags);
 
 	if (dev_priv->oa_pmu.specific_ctx == context) {
-		pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
+		//pr_err("%s: specific_ctx_id=%x\n", __func__, dev_priv->oa_pmu.specific_ctx_id);
 		dev_priv->oa_pmu.specific_ctx_id = 0;
 	}
 
