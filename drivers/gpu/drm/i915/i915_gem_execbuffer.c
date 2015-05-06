@@ -1309,11 +1309,15 @@ i915_gem_ringbuffer_submission(struct i915_execbuffer_params *params,
 	if (exec_len == 0)
 		exec_len = params->batch_obj->base.size;
 
+	i915_perf_command_stream_hook(params->request);
+
 	ret = ring->dispatch_execbuffer(params->request,
 					exec_start, exec_len,
 					params->dispatch_flags);
 	if (ret)
 		return ret;
+
+	i915_perf_command_stream_hook(params->request);
 
 	trace_i915_gem_ring_dispatch(params->request, params->dispatch_flags);
 
