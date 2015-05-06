@@ -1685,6 +1685,12 @@ struct i915_perf_event {
 	 *
 	 * The event will always be disabled before this is called */
 	void (*destroy)(struct i915_perf_event *event);
+
+	/*
+	 * Emit the commands in CS for capturing the profiling data
+	 */
+	void (*emit_profiling_data)(struct drm_i915_gem_request *req,
+				struct intel_context *ctx);
 };
 
 struct i915_oa_ops {
@@ -1698,8 +1704,15 @@ struct i915_oa_ops {
 					  u32 ctx_id);
 	void (*legacy_ctx_switch_unlocked)(struct intel_engine_cs *ring);
 	void (*read)(struct i915_perf_event *event,
-		     struct i915_perf_read_state *read_state);
+		     struct i915_perf_read_state *read_state, u32 ts);
 	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
+};
+
+struct i915_oa_rcs_node {
+	struct list_head link;
+	struct drm_i915_gem_request *request;
+	u32 offset;
+	u32 ctx_id;
 };
 
 struct drm_i915_private {
@@ -1984,6 +1997,7 @@ struct drm_i915_private {
 			u32 period_exponent;
 
 			u32 metrics_set;
+			bool rcs_sample_mode;
 
 			const struct i915_oa_reg *mux_regs;
 			int mux_regs_len;
@@ -2008,6 +2022,18 @@ struct drm_i915_private {
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
+
+			/* Fields for rcs sample mode */
+			struct {
+				struct drm_i915_gem_object *obj;
+				struct i915_vma *vma;
+				u8 *addr;
+				int format;
+				int format_size;
+				u32 node_count;
+			} oa_rcs_buffer;
+			struct list_head node_list;
+			spinlock_t node_list_lock;
 		} oa;
 
 		struct list_head events;
@@ -3194,6 +3220,8 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 				struct intel_context *context);
 void i915_oa_legacy_ctx_switch_notify(struct intel_engine_cs *ring);
 void i915_oa_update_reg_state(struct intel_engine_cs *ring, uint32_t *reg_state);
+void i915_emit_profiling_data(struct drm_i915_gem_request *req,
+				struct intel_context *ctx);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct drm_device *dev,

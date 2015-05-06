@@ -52,6 +52,14 @@ static u32 i915_perf_event_paranoid = true;
 #define GEN8_OAREPORT_REASON_GO_TRANSITION  (1<<23)
 #define GEN9_OAREPORT_REASON_CLK_RATIO      (1<<24)
 
+/* Data common to periodic and RCS based samples */
+struct oa_sample_data
+{
+	u32 source;
+	u32 ctx_id;
+	const u8 *report;
+};
+
 /* for sysctl proc_dointvec_minmax of i915_oa_event_min_timer_exponent */
 static int zero;
 static int oa_exponent_max = OA_EXPONENT_MAX;
@@ -168,6 +176,154 @@ err_size:
 	goto out;
 }
 
+void i915_emit_profiling_data(struct drm_i915_gem_request *req,
+				struct intel_context *ctx)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct i915_perf_event *event;
+
+	if (!dev_priv->perf.initialized)
+		return;
+
+	list_for_each_entry(event, &dev_priv->perf.events, link) {
+		if (event->enabled && event->emit_profiling_data)
+			event->emit_profiling_data(req, ctx);
+	}
+}
+
+/*
+ * Emits the commands to capture OA perf report, into the Render CS
+ */
+void i915_oa_emit_report(struct drm_i915_gem_request *req,
+				struct intel_context *ctx)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct intel_ringbuffer *ringbuf = req->ringbuf;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct i915_oa_rcs_node *entry;
+	u32 addr = 0;
+	int ret;
+
+	/* OA counters are only supported on the render ring */
+	if (ring->id != RCS)
+		return;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (entry == NULL) {
+		DRM_ERROR("alloc failed\n");
+		return;
+	}
+
+	if (i915.enable_execlists)
+		ret = intel_logical_ring_begin(ringbuf, ctx, 4);
+	else
+		ret = intel_ring_begin(ring, 4);
+
+	if (ret) {
+		kfree(entry);
+		return;
+	}
+
+	entry->ctx_id = ctx->global_id;
+	i915_gem_request_assign(&entry->request, req);
+
+	spin_lock(&dev_priv->perf.oa.node_list_lock);
+	if (list_empty(&dev_priv->perf.oa.node_list))
+		entry->offset = 0;
+	else {
+		struct i915_oa_rcs_node *last_entry;
+		int max_offset = dev_priv->perf.oa.oa_rcs_buffer.node_count *
+				dev_priv->perf.oa.oa_rcs_buffer.format_size;
+
+		last_entry = list_last_entry(&dev_priv->perf.oa.node_list,
+					     struct i915_oa_rcs_node, link);
+		entry->offset = last_entry->offset +
+				dev_priv->perf.oa.oa_rcs_buffer.format_size;
+
+		if (entry->offset > max_offset)
+			entry->offset = 0;
+	}
+	list_add_tail(&entry->link, &dev_priv->perf.oa.node_list);
+	spin_unlock(&dev_priv->perf.oa.node_list_lock);
+
+	addr = dev_priv->perf.oa.oa_rcs_buffer.vma->node.start + entry->offset;
+
+	/* addr should be 64 byte aligned */
+	BUG_ON(addr & 0x3f);
+
+	if (i915.enable_execlists) {
+		intel_logical_ring_emit(ringbuf, MI_REPORT_PERF_COUNT | (2<<0));
+		intel_logical_ring_emit(ringbuf,
+					addr | MI_REPORT_PERF_COUNT_GGTT);
+		intel_logical_ring_emit(ringbuf, 0);
+		intel_logical_ring_emit(ringbuf,
+			i915_gem_request_get_seqno(req));
+		intel_logical_ring_advance(ringbuf);
+	} else {
+		if (INTEL_INFO(ring->dev)->gen >= 8) {
+			intel_ring_emit(ring, MI_REPORT_PERF_COUNT | (2<<0));
+			intel_ring_emit(ring, addr | MI_REPORT_PERF_COUNT_GGTT);
+			intel_ring_emit(ring, 0);
+			intel_ring_emit(ring,
+				i915_gem_request_get_seqno(req));
+		} else {
+			intel_ring_emit(ring, MI_REPORT_PERF_COUNT | (1<<0));
+			intel_ring_emit(ring, addr | MI_REPORT_PERF_COUNT_GGTT);
+			intel_ring_emit(ring, i915_gem_request_get_seqno(req));
+			intel_ring_emit(ring, MI_NOOP);
+		}
+		intel_ring_advance(ring);
+	}
+	i915_vma_move_to_active(dev_priv->perf.oa.oa_rcs_buffer.vma, ring);
+}
+
+static int i915_oa_rcs_wait_gpu(struct drm_i915_private *dev_priv)
+{
+	struct i915_oa_rcs_node *last_entry = NULL;
+	int ret;
+
+	/*
+	 * Wait for the last scheduled request to complete. This would
+	 * implicitly wait for the prior submitted requests. The refcount
+	 * of the requests is not decremented here.
+	 */
+	spin_lock(&dev_priv->perf.oa.node_list_lock);
+
+	if (!list_empty(&dev_priv->perf.oa.node_list)) {
+		last_entry = list_last_entry(&dev_priv->perf.oa.node_list,
+			struct i915_oa_rcs_node, link);
+	}
+	spin_unlock(&dev_priv->perf.oa.node_list_lock);
+
+	if (!last_entry)
+		return 0;
+
+	ret = __i915_wait_request(last_entry->request, atomic_read(
+				&dev_priv->gpu_error.reset_counter),
+				true, NULL, NULL);
+	if (ret) {
+		DRM_ERROR("failed to wait\n");
+		return ret;
+	}
+	return 0;
+}
+
+static void i915_oa_rcs_free_requests(struct drm_i915_private *dev_priv)
+{
+	struct i915_oa_rcs_node *entry, *next;
+
+	list_for_each_entry_safe
+		(entry, next, &dev_priv->perf.oa.node_list, link) {
+		i915_gem_request_unreference__unlocked(entry->request);
+
+		spin_lock(&dev_priv->perf.oa.node_list_lock);
+		list_del(&entry->link);
+		spin_unlock(&dev_priv->perf.oa.node_list_lock);
+		kfree(entry);
+	}
+}
+
 static bool gen8_oa_buffer_is_empty(struct drm_i915_private *dev_priv)
 {
 	u32 head = I915_READ(GEN8_OAHEADPTR);
@@ -205,7 +361,7 @@ static bool append_oa_status(struct i915_perf_event *event,
 
 static bool append_oa_sample(struct i915_perf_event *event,
 			     struct i915_perf_read_state *read_state,
-			     const u8 *report)
+			     struct oa_sample_data *data)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
@@ -222,6 +378,9 @@ static bool append_oa_sample(struct i915_perf_event *event,
 	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO)
 		header.size += 4;
 
+	if (sample_flags & I915_PERF_SAMPLE_CTXID)
+		header.size += 4;
+
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
 		header.size += report_size;
 
@@ -232,6 +391,37 @@ static bool append_oa_sample(struct i915_perf_event *event,
 
 	copy_to_user(read_state->buf, &header, sizeof(header));
 	read_state->buf += sizeof(header);
+
+	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO) {
+		if (copy_to_user(read_state->buf, &data->source, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_CTXID) {
+		if (copy_to_user(read_state->buf, &data->ctx_id, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT) {
+		copy_to_user(read_state->buf, data->report, report_size);
+		read_state->buf += report_size;
+	}
+
+
+	read_state->read += header.size;
+
+	return true;
+}
+
+static bool append_oa_buffer_sample(struct i915_perf_event *event,
+				    struct i915_perf_read_state *read_state,
+				    const u8 *report)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	u32 sample_flags = event->sample_flags;
+	struct oa_sample_data data = { 0 };
 
 	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO) {
 		enum drm_i915_perf_oa_event_source source;
@@ -248,18 +438,17 @@ static bool append_oa_sample(struct i915_perf_event *event,
 		} else
 			source = I915_PERF_OA_EVENT_SOURCE_PERIODIC;
 
-		if (copy_to_user(read_state->buf, &source, 4))
-			return false;
-		read_state->buf += 4;
+		data.source = source;
 	}
 
-	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT) {
-		copy_to_user(read_state->buf, report, report_size);
-		read_state->buf += report_size;
-	}
+#warning "FIXME: append_oa_buffer_sample: read ctx ID from report and map that to an intel_context::global_id"
+	if (sample_flags & I915_PERF_SAMPLE_CTXID)
+		data.ctx_id = 0;
 
+	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
+		data.report = report;
 
-	read_state->read += header.size;
+	append_oa_sample(event, read_state, &data);
 
 	return true;
 }
@@ -267,14 +456,14 @@ static bool append_oa_sample(struct i915_perf_event *event,
 static u32 gen8_append_oa_reports(struct i915_perf_event *event,
 				  struct i915_perf_read_state *read_state,
 				  u32 head,
-				  u32 tail)
+				  u32 tail, u32 ts)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.addr;
 	u32 mask = (OA_BUFFER_SIZE - 1);
 	u8 *report;
-	u32 taken;
+	u32 report_ts, taken;
 
 	head -= dev_priv->perf.oa.oa_buffer.gtt_offset;
 	tail -= dev_priv->perf.oa.oa_buffer.gtt_offset;
@@ -298,6 +487,10 @@ static u32 gen8_append_oa_reports(struct i915_perf_event *event,
 		BUG_ON((OA_BUFFER_SIZE - (head & mask)) < report_size);
 
 		report = oa_buf_base + (head & mask);
+
+		report_ts = *(u32 *)(report + 4);
+		if (report_ts > ts)
+			break;
 
 		ctx_id = *(u32 *)(report + 12);
 		if (i915.enable_execlists) {
@@ -323,13 +516,14 @@ static u32 gen8_append_oa_reports(struct i915_perf_event *event,
 			     (dev_priv->perf.oa.specific_ctx_id !=
 			      dev_priv->perf.oa.oa_buffer.last_ctx_id))) {
 
-				if (!append_oa_sample(event, read_state, report))
+				if (!append_oa_buffer_sample(event, read_state,
+							     report))
 					break;
 			}
 		}
 
-		/* If append_oa_sample() returns false we shouldn't progress
-		 * head so we update it afterwards... */
+		/* If append_oa_buffer_sample() returns false we shouldn't
+		 * progress head so we update it afterwards... */
 		dev_priv->perf.oa.oa_buffer.last_ctx_id = ctx_id;
 		head += report_size;
 	}
@@ -338,7 +532,7 @@ static u32 gen8_append_oa_reports(struct i915_perf_event *event,
 }
 
 static void gen8_oa_read(struct i915_perf_event *event,
-			 struct i915_perf_read_state *read_state)
+			 struct i915_perf_read_state *read_state, u32 ts)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 	u32 oastatus;
@@ -369,7 +563,7 @@ static void gen8_oa_read(struct i915_perf_event *event,
 		I915_WRITE(GEN8_OASTATUS, oastatus);
 	}
 
-	head = gen8_append_oa_reports(event, read_state, head, tail);
+	head = gen8_append_oa_reports(event, read_state, head, tail, ts);
 
 	I915_WRITE(GEN8_OAHEADPTR, head);
 }
@@ -377,14 +571,14 @@ static void gen8_oa_read(struct i915_perf_event *event,
 static u32 gen7_append_oa_reports(struct i915_perf_event *event,
 				  struct i915_perf_read_state *read_state,
 				  u32 head,
-				  u32 tail)
+				  u32 tail, u32 ts)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.addr;
 	u32 mask = (OA_BUFFER_SIZE - 1);
 	u8 *report;
-	u32 taken;
+	u32 report_ts, taken;
 
 	head -= dev_priv->perf.oa.oa_buffer.gtt_offset;
 	tail -= dev_priv->perf.oa.oa_buffer.gtt_offset;
@@ -402,13 +596,17 @@ static u32 gen7_append_oa_reports(struct i915_perf_event *event,
 
 		report = oa_buf_base + (head & mask);
 
+		report_ts = *(u32 *)(report + 4);
+		if (report_ts > ts)
+			break;
+
 		if (dev_priv->perf.oa.exclusive_event->enabled) {
-			if (!append_oa_sample(event, read_state, report))
+			if (!append_oa_buffer_sample(event, read_state, report))
 				break;
 		}
 
-		/* If append_oa_sample() returns false we shouldn't progress
-		 * head so we update it afterwards... */
+		/* If append_oa_buffer_sample() returns false we shouldn't
+		 * progress head so we update it afterwards... */
 		head += report_size;
 	}
 
@@ -416,7 +614,7 @@ static u32 gen7_append_oa_reports(struct i915_perf_event *event,
 }
 
 static void gen7_oa_read(struct i915_perf_event *event,
-			 struct i915_perf_read_state *read_state)
+			 struct i915_perf_read_state *read_state, u32 ts)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 	u32 oastatus2;
@@ -450,31 +648,109 @@ static void gen7_oa_read(struct i915_perf_event *event,
 		I915_WRITE(GEN7_OASTATUS1, oastatus1);
 	}
 
-	head = gen7_append_oa_reports(event, read_state, head, tail);
+	head = gen7_append_oa_reports(event, read_state, head, tail, ts);
 
 	I915_WRITE(GEN7_OASTATUS2, (head & GEN7_OASTATUS2_HEAD_MASK) |
 				    OA_MEM_SELECT_GGTT);
 }
 
-static bool i915_oa_can_read(struct i915_perf_event *event)
+static bool append_oa_rcs_sample(struct i915_perf_event *event,
+				 struct i915_perf_read_state *read_state,
+				 struct i915_oa_rcs_node *node)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
+	u32 sample_flags = event->sample_flags;
+	struct oa_sample_data data = { 0 };
+	const u8 *report = dev_priv->perf.oa.oa_rcs_buffer.addr + node->offset;
+	u32 report_ts;
 
-	return !dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv);
+	/*
+	 * Forward the periodic OA samples which have the timestamp lower
+	 * than timestamp of this sample, before forwarding this sample.
+	 * This ensures samples read by user are order acc. to their timestamps
+	 */
+	report_ts = *(u32 *)(report + 4);
+	dev_priv->perf.oa.ops.read(event, read_state, report_ts);
+
+	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO)
+		data.source = I915_PERF_OA_EVENT_SOURCE_RCS;
+
+	if (sample_flags & I915_PERF_SAMPLE_CTXID)
+		data.ctx_id = node->ctx_id;
+
+	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
+		data.report = report;
+
+	append_oa_sample(event, read_state, &data);
+
+	return true;
 }
 
-static int i915_oa_wait_unlocked(struct i915_perf_event *event)
+static void oa_rcs_append_reports(struct i915_perf_event *event,
+				  struct i915_perf_read_state *read_state)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
+	struct i915_oa_rcs_node *entry, *next;
 
+	list_for_each_entry_safe(entry, next,
+				 &dev_priv->perf.oa.node_list, link) {
+		if (!i915_gem_request_completed(entry->request, true))
+			break;
+
+		if (!append_oa_rcs_sample(event, read_state, entry))
+			break;
+
+		spin_lock(&dev_priv->perf.oa.node_list_lock);
+		list_del(&entry->link);
+		spin_unlock(&dev_priv->perf.oa.node_list_lock);
+
+		i915_gem_request_unreference__unlocked(entry->request);
+		kfree(entry);
+	}
+
+	/* FIXME: flush any remaining periodic reports here */
+}
+
+static bool oa_rcs_buffer_is_empty(struct drm_i915_private *dev_priv)
+{
+	if (dev_priv->perf.oa.rcs_sample_mode)
+		return list_empty(&dev_priv->perf.oa.node_list);
+	else
+		return true;
+}
+
+static bool oa_have_data__unlocked(struct drm_i915_private *dev_priv)
+{
 	/* Note: the oa_buffer_is_empty() condition is ok to run unlocked as it
 	 * just performs mmio reads of the OA buffer head + tail pointers and
 	 * it's assumed we're handling some operation that implies the event
 	 * can't be destroyed until completion (such as a read()) that ensures
 	 * the device + OA buffer can't disappear
 	 */
+	return !(dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv) &&
+		 oa_rcs_buffer_is_empty(dev_priv));
+}
+
+static bool i915_oa_can_read(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	return oa_have_data__unlocked(dev_priv);
+}
+
+static int i915_oa_wait_unlocked(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	int ret;
+
+	if (dev_priv->perf.oa.rcs_sample_mode) {
+		ret = i915_oa_rcs_wait_gpu(dev_priv);
+		if (ret)
+			return ret;
+	}
+
 	return wait_event_interruptible(dev_priv->perf.oa.poll_wq,
-					!dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv));
+					oa_have_data__unlocked(dev_priv));
 }
 
 static void i915_oa_poll_wait(struct i915_perf_event *event,
@@ -491,7 +767,26 @@ static void i915_oa_read(struct i915_perf_event *event,
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 
-	dev_priv->perf.oa.ops.read(event, read_state);
+	if (dev_priv->perf.oa.rcs_sample_mode)
+		oa_rcs_append_reports(event, read_state);
+	else
+		dev_priv->perf.oa.ops.read(event, read_state, U32_MAX);
+}
+
+static void
+free_oa_rcs_buffer(struct drm_i915_private *i915)
+{
+	mutex_lock(&i915->dev->struct_mutex);
+
+	vunmap(i915->perf.oa.oa_rcs_buffer.addr);
+	i915_gem_object_ggtt_unpin(i915->perf.oa.oa_rcs_buffer.obj);
+	drm_gem_object_unreference(&i915->perf.oa.oa_rcs_buffer.obj->base);
+
+	i915->perf.oa.oa_rcs_buffer.obj = NULL;
+	i915->perf.oa.oa_rcs_buffer.vma = NULL;
+	i915->perf.oa.oa_rcs_buffer.addr = NULL;
+
+	mutex_unlock(&i915->dev->struct_mutex);
 }
 
 static void
@@ -517,6 +812,9 @@ static void i915_oa_event_destroy(struct i915_perf_event *event)
 	BUG_ON(event != dev_priv->perf.oa.exclusive_event);
 
 	dev_priv->perf.oa.ops.disable_metric_set(dev_priv);
+
+	if (dev_priv->perf.oa.rcs_sample_mode)
+		free_oa_rcs_buffer(dev_priv);
 
 	free_oa_buffer(dev_priv);
 
@@ -585,16 +883,17 @@ static void gen8_init_oa_buffer(struct drm_i915_private *dev_priv)
 		   dev_priv->perf.oa.oa_buffer.gtt_offset);
 }
 
-static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
+static int alloc_obj(struct drm_i915_private *dev_priv,
+				struct drm_i915_gem_object **obj)
 {
 	struct drm_i915_gem_object *bo;
 	int ret;
 
-	BUG_ON(dev_priv->perf.oa.oa_buffer.obj);
+	intel_runtime_pm_get(dev_priv);
 
 	ret = i915_mutex_lock_interruptible(dev_priv->dev);
 	if (ret)
-		return ret;
+		goto out;
 
 	bo = i915_gem_alloc_object(dev_priv->dev, OA_BUFFER_SIZE);
 	if (bo == NULL) {
@@ -602,8 +901,6 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 		ret = -ENOMEM;
 		goto unlock;
 	}
-	dev_priv->perf.oa.oa_buffer.obj = bo;
-
 	ret = i915_gem_object_set_cache_level(bo, I915_CACHE_LLC);
 	if (ret)
 		goto err_unref;
@@ -612,6 +909,31 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 	ret = i915_gem_obj_ggtt_pin(bo, SZ_16M, 0);
 	if (ret)
 		goto err_unref;
+
+	*obj = bo;
+	goto unlock;
+
+err_unref:
+	drm_gem_object_unreference(&bo->base);
+unlock:
+	mutex_unlock(&dev_priv->dev->struct_mutex);
+out:
+	intel_runtime_pm_put(dev_priv);
+	return ret;
+}
+
+static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_gem_object *bo;
+	int ret;
+
+	BUG_ON(dev_priv->perf.oa.oa_buffer.obj);
+
+	ret = alloc_obj(dev_priv, &bo);
+	if (ret)
+		return ret;
+
+	dev_priv->perf.oa.oa_buffer.obj = bo;
 
 	dev_priv->perf.oa.oa_buffer.gtt_offset = i915_gem_obj_ggtt_offset(bo);
 	dev_priv->perf.oa.oa_buffer.addr = vmap_oa_buffer(bo);
@@ -622,14 +944,34 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 			 dev_priv->perf.oa.oa_buffer.gtt_offset,
 			 dev_priv->perf.oa.oa_buffer.addr);
 
-	goto unlock;
+	return 0;
+}
 
-err_unref:
-	drm_gem_object_unreference(&bo->base);
+static int alloc_oa_rcs_buffer(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_gem_object *bo;
+	int ret;
 
-unlock:
-	mutex_unlock(&dev_priv->dev->struct_mutex);
-	return ret;
+	BUG_ON(dev_priv->perf.oa.oa_rcs_buffer.obj);
+
+	ret = alloc_obj(dev_priv, &bo);
+	if (ret)
+		return ret;
+
+	dev_priv->perf.oa.oa_rcs_buffer.obj = bo;
+	dev_priv->perf.oa.oa_rcs_buffer.vma = i915_gem_obj_to_ggtt(bo);
+	dev_priv->perf.oa.oa_rcs_buffer.addr = vmap_oa_buffer(bo);
+
+	INIT_LIST_HEAD(&dev_priv->perf.oa.node_list);
+	dev_priv->perf.oa.oa_rcs_buffer.node_count = bo->base.size /
+				dev_priv->perf.oa.oa_rcs_buffer.format_size;
+
+	DRM_DEBUG_DRIVER(
+		"OA RCS Buffer initialized, gtt offset = 0x%x, vaddr = %p",
+		 (unsigned int)dev_priv->perf.oa.oa_rcs_buffer.vma->node.start,
+		 dev_priv->perf.oa.oa_rcs_buffer.addr);
+
+	return 0;
 }
 
 static void config_oa_regs(struct drm_i915_private *dev_priv,
@@ -927,6 +1269,11 @@ static void i915_oa_event_disable(struct i915_perf_event *event)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
 
+	if (dev_priv->perf.oa.rcs_sample_mode) {
+		i915_oa_rcs_wait_gpu(dev_priv);
+		i915_oa_rcs_free_requests(dev_priv);
+	}
+
 	dev_priv->perf.oa.ops.oa_disable(dev_priv);
 
 	if (dev_priv->perf.oa.periodic)
@@ -963,6 +1310,7 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 					      sizeof(oa_attr));
 	if (ret)
 		return ret;
+
 
 	known_flags = I915_OA_FLAG_PERIODIC;
 	if (oa_attr.flags & ~known_flags) {
@@ -1018,6 +1366,21 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 		return -EINVAL;
 	}
 
+	if (IS_HASWELL(dev_priv->dev) &&
+	    (param->sample_flags & I915_PERF_SAMPLE_CTXID)) {
+		dev_priv->perf.oa.oa_rcs_buffer.format_size = format_size;
+		dev_priv->perf.oa.oa_rcs_buffer.format =
+			dev_priv->perf.oa.oa_buffer.format;
+
+		spin_lock_init(&dev_priv->perf.oa.node_list_lock);
+
+		ret = alloc_oa_rcs_buffer(dev_priv);
+		if (ret)
+			return ret;
+		dev_priv->perf.oa.rcs_sample_mode = true;
+	} else
+		dev_priv->perf.oa.rcs_sample_mode = false;
+
 	ret = alloc_oa_buffer(dev_priv);
 	if (ret)
 		return ret;
@@ -1054,6 +1417,9 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 	event->wait_unlocked = i915_oa_wait_unlocked;
 	event->poll_wait = i915_oa_poll_wait;
 	event->read = i915_oa_read;
+
+	if (dev_priv->perf.oa.rcs_sample_mode)
+		event->emit_profiling_data = i915_oa_emit_report;
 
 	return 0;
 
@@ -1278,7 +1644,7 @@ static enum hrtimer_restart poll_check_timer_cb(struct hrtimer *hrtimer)
 		container_of(hrtimer, typeof(*dev_priv),
 			     perf.oa.poll_check_timer);
 
-	if (!dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv))
+	if (oa_have_data__unlocked(dev_priv))
 		wake_up(&dev_priv->perf.oa.poll_wq);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(POLL_PERIOD));
@@ -1464,7 +1830,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 	}
 
 	known_sample_flags = I915_PERF_SAMPLE_OA_REPORT |
-			     I915_PERF_SAMPLE_SOURCE_INFO;
+			     I915_PERF_SAMPLE_SOURCE_INFO |
+			     I915_PERF_SAMPLE_CTXID;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;

@@ -1182,6 +1182,7 @@ enum drm_i915_perf_oa_event_source {
 	I915_PERF_OA_EVENT_SOURCE_UNDEFINED,
 	I915_PERF_OA_EVENT_SOURCE_PERIODIC,
 	I915_PERF_OA_EVENT_SOURCE_CONTEXT_SWITCH,
+	I915_PERF_OA_EVENT_SOURCE_RCS,
 
 	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
 };
@@ -1216,6 +1217,7 @@ struct drm_i915_perf_oa_attr {
 
 #define I915_PERF_SAMPLE_OA_REPORT	(1<<0)
 #define I915_PERF_SAMPLE_SOURCE_INFO	(1<<1)
+#define I915_PERF_SAMPLE_CTXID		(1<<2)
 
 struct drm_i915_perf_open_param {
 	/* Such as I915_PERF_OA_EVENT */
@@ -1254,6 +1256,7 @@ enum drm_i915_perf_record_type {
 	 *     struct drm_i915_perf_event_header header;
 	 *
 	 *     { u32 source_info; } && I915_PERF_SAMPLE_SOURCE_INFO
+	 *     { u32 ctx_id; }      && I915_PERF_SAMPLE_CTXID
 	 *     { u32 oa_report[]; } && I915_PERF_SAMPLE_OA_REPORT
 	 *
 	 * };

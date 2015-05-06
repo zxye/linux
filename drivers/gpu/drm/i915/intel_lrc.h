@@ -44,6 +44,9 @@ int intel_logical_rings_init(struct drm_device *dev);
 
 int logical_ring_flush_all_caches(struct intel_ringbuffer *ringbuf,
 				  struct intel_context *ctx);
+
+int intel_logical_ring_begin(struct intel_ringbuffer *ringbuf,
+			     struct intel_context *ctx, int num_dwords);
 /**
  * intel_logical_ring_advance() - advance the ringbuffer tail
  * @ringbuf: Ringbuffer to advance.
