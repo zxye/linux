@@ -257,20 +257,46 @@ oa_buffer_destroy(struct drm_i915_private *i915)
 
 static void i915_oa_event_destroy(struct perf_event *event)
 {
-	struct drm_i915_private *i915 =
-		container_of(event->pmu, typeof(*i915), oa_pmu.pmu);
+	struct drm_i915_private *dev_priv =
+		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 
 	WARN_ON(event->parent);
 
-	oa_buffer_destroy(i915);
+	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
+				  ~GEN6_RCZUNIT_CLOCK_GATE_DISABLE));
+	//I915_WRITE(GEN6_UCGCTL3, (I915_READ(GEN6_UCGCTL3) &
+	//			  ~GEN6_OACSUNIT_CLOCK_GATE_DISABLE));
+	I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) |
+				    GEN7_DOP_CLOCK_GATE_ENABLE));
 
-	i915->oa_pmu.specific_ctx = NULL;
+	I915_WRITE(GEN7_ROW_CHICKEN2,
+		   _MASKED_BIT_DISABLE(DOP_CLOCK_GATING_DISABLE));
 
-	BUG_ON(i915->oa_pmu.exclusive_event != event);
-	i915->oa_pmu.exclusive_event = NULL;
+	//if (IS_HSW_GT2(dev_priv->dev)) {
+	if (1) {
+		I915_WRITE(HSW_ROW_CHICKEN2_GT2,
+			   _MASKED_BIT_DISABLE(DOP_CLOCK_GATING_DISABLE));
+	}
 
-	intel_uncore_forcewake_put(i915, FORCEWAKE_ALL);
-	intel_runtime_pm_put(i915);
+	if (IS_HSW_GT3(dev_priv->dev)) {
+		I915_WRITE(HSW_ROW_CHICKEN2_GT3_0,
+			   _MASKED_BIT_DISABLE(DOP_CLOCK_GATING_DISABLE));
+		I915_WRITE(HSW_ROW_CHICKEN2_GT3_1,
+			   _MASKED_BIT_DISABLE(DOP_CLOCK_GATING_DISABLE));
+	}
+
+	I915_WRITE(GDT_CHICKEN_BITS, (I915_READ(GDT_CHICKEN_BITS) &
+				      ~GT_NOA_ENABLE));
+
+	oa_buffer_destroy(dev_priv);
+
+	dev_priv->oa_pmu.specific_ctx = NULL;
+
+	BUG_ON(dev_priv->oa_pmu.exclusive_event != event);
+	dev_priv->oa_pmu.exclusive_event = NULL;
+
+	intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
+	intel_runtime_pm_put(dev_priv);
 }
 
 static void *vmap_oa_buffer(struct drm_i915_gem_object *obj)
@@ -586,6 +612,32 @@ static int i915_oa_event_init(struct perf_event *event)
 	BUG_ON(dev_priv->oa_pmu.exclusive_event);
 	dev_priv->oa_pmu.exclusive_event = event;
 
+
+	I915_WRITE(GDT_CHICKEN_BITS, GT_NOA_ENABLE);
+
+	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) |
+				  GEN6_RCZUNIT_CLOCK_GATE_DISABLE));
+	//I915_WRITE(GEN6_UCGCTL3, (I915_READ(GEN6_UCGCTL3) |
+	//			  GEN6_OACSUNIT_CLOCK_GATE_DISABLE));
+	I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) &
+				    ~GEN7_DOP_CLOCK_GATE_ENABLE));
+
+	I915_WRITE(GEN7_ROW_CHICKEN2,
+		   _MASKED_BIT_ENABLE(DOP_CLOCK_GATING_DISABLE));
+
+	//if (IS_HSW_GT2(dev_priv->dev)) {
+	if (1) {
+		I915_WRITE(HSW_ROW_CHICKEN2_GT2,
+			   _MASKED_BIT_ENABLE(DOP_CLOCK_GATING_DISABLE));
+	}
+
+	if (IS_HSW_GT3(dev_priv->dev)) {
+		I915_WRITE(HSW_ROW_CHICKEN2_GT3_0,
+			   _MASKED_BIT_ENABLE(DOP_CLOCK_GATING_DISABLE));
+		I915_WRITE(HSW_ROW_CHICKEN2_GT3_1,
+			   _MASKED_BIT_ENABLE(DOP_CLOCK_GATING_DISABLE));
+	}
+
 	event->destroy = i915_oa_event_destroy;
 
 	/* PRM - observability performance counters:
@@ -682,8 +734,6 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 	 */
 	WARN_ONCE(I915_READ(GEN6_UCGCTL3) & GEN6_OACSUNIT_CLOCK_GATE_DISABLE,
 		  "disabled OA unit level clock gating will result in incorrect per-context OA counters");
-
-	I915_WRITE(GDT_CHICKEN_BITS, GT_NOA_ENABLE);
 
 	if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_3D) {
 		config_oa_regs(dev_priv, hsw_profile_3d_mux_config,

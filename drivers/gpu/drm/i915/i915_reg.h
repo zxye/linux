@@ -7084,6 +7084,9 @@ enum skl_disp_power_wells {
 
 #define GEN7_ROW_CHICKEN2		0xe4f4
 #define GEN7_ROW_CHICKEN2_GT2		0xf4f4
+#define HSW_ROW_CHICKEN2_GT2		0xe5f4
+#define HSW_ROW_CHICKEN2_GT3_0		0xe6f4
+#define HSW_ROW_CHICKEN2_GT3_1		0xe7f4
 #define   DOP_CLOCK_GATING_DISABLE	(1<<0)
 
 #define HSW_ROW_CHICKEN3		0xe49c
