@@ -129,6 +129,11 @@ enum drm_i915_oa_event_type {
 	I915_OA_RECORD_MAX,			/* non-ABI */
 };
 
+struct drm_i915_oa_async_node_footer {
+	__u32 pid;
+	__u32 ctx_id;
+};
+
 /* Each region is a minimum of 16k, and there are at most 255 of them.
  */
 #define I915_NR_TEX_REGIONS 255	/* table size 2k - maximum due to use

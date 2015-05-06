@@ -1603,6 +1603,28 @@ struct i915_oa_ops {
        void (*flush_oa_snapshots)(struct drm_i915_private *dev_priv,
                                   bool skip_if_flushing);
 };
+
+struct drm_i915_oa_async_queue_header {
+	__u64 size_in_bytes;
+	/* Byte offset, start of queue header to first node */
+	__u64 data_offset;
+	__u32 node_count;
+	__u32 wrap_count;
+	__u32 pad[10];
+};
+
+struct drm_i915_oa_async_node_info {
+	__u32 pid;
+	__u32 ctx_id;
+	struct drm_i915_gem_request *req;
+	__u32 pad[12];
+};
+
+struct drm_i915_oa_async_node {
+	struct drm_i915_oa_async_node_info node_info;
+	__u32 report_perf[64]; /* Must be aligned to 64-byte boundary */
+};
+
 #endif
 
 struct drm_i915_private {
@@ -1914,7 +1936,9 @@ struct drm_i915_private {
 			u32 tail;
 			int format;
 			int format_size;
+			u8 *snapshot;
 		} oa_async_buffer;
+		struct work_struct work_timer;
 	} oa_pmu;
 #endif
 

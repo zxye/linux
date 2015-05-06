@@ -38,6 +38,146 @@ static int bdw_perf_format_sizes[] = {
        64,  /* C4_B8_BDW */
 };
 
+static void init_oa_async_buf_queue(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_oa_async_queue_header *hdr =
+		(struct drm_i915_oa_async_queue_header *)
+		dev_priv->oa_pmu.oa_async_buffer.addr;
+	void *data_ptr;
+
+	hdr->size_in_bytes = dev_priv->oa_pmu.oa_async_buffer.obj->base.size;
+	/* 64 bit alignment for OA node address */
+	data_ptr = PTR_ALIGN((void *)(hdr + 1), 64);
+	hdr->data_offset = (__u64)(data_ptr - (void *)hdr);
+
+	hdr->node_count = 0;
+	hdr->wrap_count = 0;
+}
+
+static void forward_one_oa_async_sample(struct drm_i915_private *dev_priv,
+				struct drm_i915_oa_async_node *node)
+{
+	struct perf_sample_data data;
+	struct perf_event *event = dev_priv->oa_pmu.exclusive_event;
+	int format_size, snapshot_size;
+	u8 *snapshot;
+	struct perf_raw_record raw;
+
+	format_size = dev_priv->oa_pmu.oa_async_buffer.format_size;
+	snapshot_size = format_size +
+			sizeof(struct drm_i915_oa_async_node_footer);
+	snapshot = dev_priv->oa_pmu.oa_async_buffer.snapshot;
+
+	memcpy(snapshot, node, format_size);
+	memcpy(snapshot + format_size, &node->node_info,
+			sizeof(struct drm_i915_oa_async_node_footer));
+
+	perf_sample_data_init(&data, 0, event->hw.last_period);
+
+	/* Note: the combined u32 raw->size member + raw data itself must be 8
+	 * byte aligned. (See note in init_oa_buffer for more details) */
+	raw.size = snapshot_size + 4;
+	raw.data = snapshot;
+
+	data.raw = &raw;
+
+	perf_event_overflow(event, &data, &dev_priv->oa_pmu.dummy_regs);
+}
+
+int i915_oa_async_wait_gpu(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_oa_async_queue_header *hdr =
+		(struct drm_i915_oa_async_queue_header *)
+		dev_priv->oa_pmu.oa_async_buffer.addr;
+	struct drm_i915_oa_async_node *first_node, *node;
+	int ret, head, tail, num_nodes;
+	struct drm_i915_gem_request *req;
+	unsigned long lock_flags;
+
+	first_node = (struct drm_i915_oa_async_node *)
+			((char *)hdr + hdr->data_offset);
+	num_nodes = (hdr->size_in_bytes - hdr->data_offset) /
+			sizeof(*node);
+
+
+	/* Sample the current values of tail and head */
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	tail = hdr->node_count;
+	head = dev_priv->oa_pmu.oa_async_buffer.head;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	/*
+	 * Wait for the requests scheduled till now to complete. The refcount
+	 * of the requests is not decremented here. It is expected that the
+	 * refcount is decremented in the subsequest rountine called for
+	 * processing the samples (during either flush or event stop operation)
+	 */
+	while ((head % num_nodes) != (tail % num_nodes)) {
+		node = &first_node[head % num_nodes];
+		req = node->node_info.req;
+		if (!req) {
+			head++;
+			continue;
+		}
+
+		ret = __i915_wait_request(req, atomic_read(
+				&dev_priv->gpu_error.reset_counter),
+				dev_priv->mm.interruptible, NULL,
+				NULL);
+		if (ret) {
+			DRM_ERROR("failed to wait\n");
+			return ret;
+		}
+		head++;
+	}
+	return 0;
+}
+
+void forward_oa_async_snapshots_work(struct work_struct *__work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(__work, typeof(*dev_priv),
+			oa_pmu.work_timer);
+	struct drm_i915_oa_async_queue_header *hdr =
+		(struct drm_i915_oa_async_queue_header *)
+		dev_priv->oa_pmu.oa_async_buffer.addr;
+	struct drm_i915_oa_async_node *first_node, *node;
+	unsigned long lock_flags;
+	int ret, head, tail, num_nodes;
+	struct drm_i915_gem_request *req;
+
+	first_node = (struct drm_i915_oa_async_node *)
+			((char *)hdr + hdr->data_offset);
+	num_nodes = (hdr->size_in_bytes - hdr->data_offset) /
+			sizeof(*node);
+
+	/* Sample the current values of tail and head */
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	tail = hdr->node_count;
+	head = dev_priv->oa_pmu.oa_async_buffer.head;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	while ((head % num_nodes) != (tail % num_nodes)) {
+		node = &first_node[head % num_nodes];
+		req = node->node_info.req;
+		if (req && i915_gem_request_completed(req, true)) {
+			forward_one_oa_async_sample(dev_priv, node);
+			ret = i915_mutex_lock_interruptible(dev_priv->dev);
+			if (ret)
+				break;
+			i915_gem_request_assign(&node->node_info.req, NULL);
+			mutex_unlock(&dev_priv->dev->struct_mutex);
+			head++;
+		} else
+			break;
+	}
+
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	dev_priv->oa_pmu.oa_async_buffer.tail = tail;
+	dev_priv->oa_pmu.oa_async_buffer.head = head;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+}
+
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
 					     struct perf_event *event)
@@ -98,6 +238,14 @@ static u32 gen8_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 	u32 mask = (OA_BUFFER_SIZE - 1);
 	u8 *snapshot;
 	u32 taken;
+
+	/*
+	 * Schedule a wq to forward the async samples collected. We schedule
+	 * wq here, since it requires device mutex to be taken which can't be
+	 * done here because of atomic context
+	 */
+	if (dev_priv->oa_pmu.async_sample_mode)
+		schedule_work(&dev_priv->oa_pmu.work_timer);
 
 	head -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 	tail -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
@@ -218,6 +366,14 @@ static u32 gen7_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 	u8 *snapshot;
 	u32 taken;
 
+	/*
+	 * Schedule a wq to forward the async samples collected. We schedule
+	 * wq here, since it requires device mutex to be taken which can't be
+	 * done here because of atomic context
+	 */
+	if (dev_priv->oa_pmu.async_sample_mode)
+		schedule_work(&dev_priv->oa_pmu.work_timer);
+
 	head -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 	tail -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 
@@ -311,6 +467,7 @@ oa_async_buffer_destroy(struct drm_i915_private *i915)
 	spin_lock_irqsave(&i915->oa_pmu.lock, lock_flags);
 	i915->oa_pmu.oa_async_buffer.obj = NULL;
 	i915->oa_pmu.oa_async_buffer.addr = NULL;
+	kfree(i915->oa_pmu.oa_async_buffer.snapshot);
 	spin_unlock_irqrestore(&i915->oa_pmu.lock, lock_flags);
 }
 
@@ -523,7 +680,7 @@ static int init_async_oa_buffer(struct perf_event *event)
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 	struct drm_i915_gem_object *bo;
-	int ret;
+	int snapshot_size, ret;
 
 	BUG_ON(dev_priv->oa_pmu.oa_async_buffer.obj);
 
@@ -534,6 +691,12 @@ static int init_async_oa_buffer(struct perf_event *event)
 	dev_priv->oa_pmu.oa_async_buffer.obj = bo;
 
 	dev_priv->oa_pmu.oa_async_buffer.addr = vmap_oa_buffer(bo);
+	init_oa_async_buf_queue(dev_priv);
+
+	snapshot_size = dev_priv->oa_pmu.oa_async_buffer.format_size +
+				sizeof(struct drm_i915_oa_async_node_footer);
+	dev_priv->oa_pmu.oa_async_buffer.snapshot =
+			kmalloc(snapshot_size, GFP_KERNEL);
 
 	DRM_DEBUG_DRIVER("OA Async Buffer initialized, vaddr = %p",
 			 dev_priv->oa_pmu.oa_async_buffer.addr);
@@ -1101,6 +1264,10 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 		dev_priv->oa_pmu.ops.flush_oa_snapshots(dev_priv, false);
 	}
 
+	if (dev_priv->oa_pmu.async_sample_mode) {
+		dev_priv->oa_pmu.oa_async_buffer.tail = 0;
+		dev_priv->oa_pmu.oa_async_buffer.head = 0;
+	}
 	event->hw.state = PERF_HES_STOPPED;
 }
 
@@ -1131,6 +1298,13 @@ static int i915_oa_event_flush(struct perf_event *event)
 	if (event->attr.sample_period) {
 		struct drm_i915_private *i915 =
 			container_of(event->pmu, typeof(*i915), oa_pmu.pmu);
+		int ret;
+
+		if (i915->oa_pmu.async_sample_mode) {
+			ret = i915_oa_async_wait_gpu(i915);
+			if (ret)
+				return ret;
+		}
 
 		i915->oa_pmu.ops.flush_oa_snapshots(i915, true);
 	}
@@ -1329,6 +1503,8 @@ void i915_oa_pmu_register(struct drm_device *dev)
 	hrtimer_init(&i915->oa_pmu.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	i915->oa_pmu.timer.function = hrtimer_sample;
 
+	INIT_WORK(&i915->oa_pmu.work_timer, forward_oa_async_snapshots_work);
+
 	spin_lock_init(&i915->oa_pmu.lock);
 
 	i915->oa_pmu.pmu.capabilities  = PERF_PMU_CAP_IS_DEVICE;
@@ -1375,6 +1551,9 @@ void i915_oa_pmu_unregister(struct drm_device *dev)
 
 	if (i915->oa_pmu.pmu.event_init == NULL)
 		return;
+
+	if (i915->oa_pmu.async_sample_mode)
+		cancel_work_sync(&i915->oa_pmu.work_timer);
 
 	unregister_sysctl_table(i915->oa_pmu.sysctl_header);
 
