@@ -1523,11 +1523,15 @@ execbuf_submit(struct i915_execbuffer_params *params,
 	if (exec_len == 0)
 		exec_len = params->batch->size - params->args_batch_start_offset;
 
+	i915_perf_command_stream_hook(params->request);
+
 	ret = params->engine->emit_bb_start(params->request,
 					    exec_start, exec_len,
 					    params->dispatch_flags);
 	if (ret)
 		return ret;
+
+	i915_perf_command_stream_hook(params->request);
 
 	trace_i915_gem_ring_dispatch(params->request, params->dispatch_flags);
 
