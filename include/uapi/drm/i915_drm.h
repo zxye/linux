@@ -92,7 +92,8 @@ typedef struct _drm_i915_oa_attr {
 	__u32 ctx_id;
 
 	__u64 single_context : 1,
-	      __reserved_1 : 63;
+		multiple_context_mode:1,
+		__reserved_1:62;
 } drm_i915_oa_attr_t;
 
 /* Header for PERF_RECORD_DEVICE type events */

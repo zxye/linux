@@ -1889,6 +1889,7 @@ struct drm_i915_private {
 		bool event_active;
 
 		bool periodic;
+		bool multiple_ctx_mode;
 		u32 period_exponent;
 
 		u32 metrics_set;
@@ -1903,6 +1904,15 @@ struct drm_i915_private {
 			int format_size;
 			spinlock_t flush_lock;
 		} oa_buffer;
+
+		/* Fields for multiple context capture mode */
+		struct {
+			struct drm_i915_gem_object *obj;
+			u32 gtt_offset;
+			u8 *addr;
+			int format;
+			int format_size;
+		} oa_rcs_buffer;
 	} oa_pmu;
 #endif
 
