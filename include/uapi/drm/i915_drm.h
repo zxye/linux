@@ -1192,6 +1192,14 @@ enum drm_i915_oa_format {
 	I915_OA_FORMAT_MAX	    /* non-ABI */
 };
 
+enum drm_i915_perf_oa_event_source {
+	I915_PERF_OA_EVENT_SOURCE_UNDEFINED,
+	I915_PERF_OA_EVENT_SOURCE_PERIODIC,
+	I915_PERF_OA_EVENT_SOURCE_CONTEXT_SWITCH,
+
+	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
+};
+
 enum drm_i915_perf_property_id {
 	/**
 	 * Open the stream for a specific context handle (as used with
@@ -1225,6 +1233,13 @@ enum drm_i915_perf_property_id {
 	 *   80ns * 2^(period_exponent + 1)
 	 */
 	DRM_I915_PERF_PROP_OA_EXPONENT,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of sample
+	 * source field to be given to userspace. The sample source field
+	 * specifies the origin of OA report.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE,
 
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
@@ -1275,6 +1290,7 @@ enum drm_i915_perf_record_type {
 	 * struct {
 	 *     struct drm_i915_perf_record_header header;
 	 *
+	 *     { u32 source_info; } && DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
