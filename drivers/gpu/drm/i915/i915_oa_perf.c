@@ -58,6 +58,14 @@ static u32 forward_oa_snapshots(struct drm_i915_private *dev_priv,
 	u8 *snapshot;
 	u32 taken;
 
+	/*
+	 * Schedule a worker to forward the RCS based OA reports collected.
+	 * A worker is needed since it requires device mutex to be taken
+	 * which can't be done here because of atomic context
+	 */
+	if (dev_priv->oa_pmu.multiple_ctx_mode)
+		schedule_work(&dev_priv->oa_pmu.forward_work);
+
 	head -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 	tail -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 
@@ -163,6 +171,119 @@ static void flush_oa_snapshots(struct drm_i915_private *dev_priv,
 				    GEN7_OASTATUS2_GGTT);
 
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.oa_buffer.flush_lock, flags);
+}
+
+static int i915_oa_rcs_wait_gpu(struct drm_i915_private *dev_priv)
+{
+	struct i915_oa_rcs_node *last_entry = NULL;
+	int ret = 0;
+
+	/*
+	 * Wait for the last scheduled request to complete. This would
+	 * implicitly wait for the prior submitted requests. The refcount
+	 * of the requests is not decremented here.
+	 */
+	spin_lock(&dev_priv->oa_pmu.lock);
+
+	if (!list_empty(&dev_priv->oa_pmu.node_list)) {
+		last_entry = list_last_entry(&dev_priv->oa_pmu.node_list,
+			struct i915_oa_rcs_node, head);
+	}
+	spin_unlock(&dev_priv->oa_pmu.lock);
+
+	if (!last_entry)
+		return 0;
+
+	ret = __i915_wait_request(last_entry->req, atomic_read(
+			&dev_priv->gpu_error.reset_counter),
+			true, NULL, NULL);
+	if (ret) {
+		DRM_ERROR("failed to wait\n");
+		return ret;
+	}
+	return 0;
+}
+
+static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
+				struct i915_oa_rcs_node *node)
+{
+	struct perf_sample_data data;
+	struct perf_event *event = dev_priv->oa_pmu.exclusive_event;
+	int format_size, snapshot_size;
+	u8 *snapshot;
+	struct drm_i915_oa_node_ctx_id *ctx_info;
+	struct perf_raw_record raw;
+
+	format_size = dev_priv->oa_pmu.oa_rcs_buffer.format_size;
+	snapshot_size = format_size + sizeof(*ctx_info);
+	snapshot = dev_priv->oa_pmu.oa_rcs_buffer.addr + node->offset;
+
+	ctx_info = (struct drm_i915_oa_node_ctx_id *)(snapshot + format_size);
+	ctx_info->ctx_id = node->ctx_id;
+
+	perf_sample_data_init(&data, 0, event->hw.last_period);
+
+	/* Note: the raw sample consists of a u32 size member and raw data. The
+	 * combined size of these two fields is required to be 8 byte aligned.
+	 * The size of raw data field is assumed to be 8 byte aligned already.
+	 * Therefore, adding 4 bytes to the total size here. We can't use
+	 * BUILD_BUG_ON here as snapshot size is derived at runtime.
+	 */
+	raw.size = snapshot_size + 4;
+	raw.data = snapshot;
+
+	data.raw = &raw;
+
+	perf_event_overflow(event, &data, &dev_priv->oa_pmu.dummy_regs);
+}
+
+/*
+ * Routine to forward the samples to perf. This may be called from the event
+ * flush and worker thread. This function may sleep, hence can't be called from
+ * atomic contexts directly.
+ */
+static void forward_oa_rcs_snapshots(struct drm_i915_private *dev_priv)
+{
+	struct i915_oa_rcs_node *entry, *next;
+	LIST_HEAD(deferred_list_free);
+	int ret;
+
+	list_for_each_entry_safe
+		(entry, next, &dev_priv->oa_pmu.node_list, head) {
+		if (!i915_gem_request_completed(entry->req, true))
+			break;
+
+		forward_one_oa_rcs_sample(dev_priv, entry);
+
+		spin_lock(&dev_priv->oa_pmu.lock);
+		list_move_tail(&entry->head, &deferred_list_free);
+		spin_unlock(&dev_priv->oa_pmu.lock);
+	}
+
+	ret = i915_mutex_lock_interruptible(dev_priv->dev);
+	if (ret)
+		return;
+	while (!list_empty(&deferred_list_free)) {
+		entry = list_first_entry(&deferred_list_free,
+					struct i915_oa_rcs_node, head);
+		i915_gem_request_unreference(entry->req);
+		list_del(&entry->head);
+		kfree(entry);
+	}
+	mutex_unlock(&dev_priv->dev->struct_mutex);
+}
+
+/*
+ * Work fn to forward the snapshots. The forwarding of samples is trigged from
+ * hrtimer and event_stop (both atomic contexts). The forward function may
+ * sleep, hence the need for worker.
+ */
+static void forward_oa_rcs_work_fn(struct work_struct *__work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(__work, typeof(*dev_priv), oa_pmu.forward_work);
+
+	forward_oa_rcs_snapshots(dev_priv);
 }
 
 static void
@@ -361,7 +482,7 @@ static int init_oa_rcs_buffer(struct perf_event *event)
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 	struct drm_i915_gem_object *bo;
-	int ret;
+	int ret, node_size;
 
 	BUG_ON(dev_priv->oa_pmu.oa_rcs_buffer.obj);
 
@@ -373,6 +494,16 @@ static int init_oa_rcs_buffer(struct perf_event *event)
 	dev_priv->oa_pmu.oa_rcs_buffer.gtt_offset =
 				i915_gem_obj_ggtt_offset(bo);
 	dev_priv->oa_pmu.oa_rcs_buffer.addr = vmap_oa_buffer(bo);
+	INIT_LIST_HEAD(&dev_priv->oa_pmu.node_list);
+
+	node_size = dev_priv->oa_pmu.oa_rcs_buffer.format_size +
+			sizeof(struct drm_i915_oa_node_ctx_id);
+
+	/* node size has to be aligned to 64 bytes, since only 64 byte aligned
+	 * addresses can be given to OA unit for dumping OA reports */
+	node_size = ALIGN(node_size, 64);
+	dev_priv->oa_pmu.oa_rcs_buffer.node_size = node_size;
+	dev_priv->oa_pmu.oa_rcs_buffer.node_count = bo->base.size / node_size;
 
 	DRM_DEBUG_DRIVER("OA RCS Buffer initialized, vaddr = %p",
 			 dev_priv->oa_pmu.oa_rcs_buffer.addr);
@@ -846,7 +977,14 @@ static int i915_oa_event_flush(struct perf_event *event)
 	if (event->attr.sample_period) {
 		struct drm_i915_private *i915 =
 			container_of(event->pmu, typeof(*i915), oa_pmu.pmu);
+		int ret;
 
+		if (i915->oa_pmu.multiple_ctx_mode) {
+			ret = i915_oa_rcs_wait_gpu(i915);
+			if (ret)
+				return ret;
+			forward_oa_rcs_snapshots(i915);
+		}
 		flush_oa_snapshots(i915, true);
 	}
 
@@ -942,6 +1080,8 @@ void i915_oa_pmu_register(struct drm_device *dev)
 	hrtimer_init(&i915->oa_pmu.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	i915->oa_pmu.timer.function = hrtimer_sample;
 
+	INIT_WORK(&i915->oa_pmu.forward_work, forward_oa_rcs_work_fn);
+
 	spin_lock_init(&i915->oa_pmu.lock);
 
 	i915->oa_pmu.pmu.capabilities  = PERF_PMU_CAP_IS_DEVICE;
@@ -970,6 +1110,9 @@ void i915_oa_pmu_unregister(struct drm_device *dev)
 
 	if (i915->oa_pmu.pmu.event_init == NULL)
 		return;
+
+	if (i915->oa_pmu.multiple_ctx_mode)
+		cancel_work_sync(&i915->oa_pmu.forward_work);
 
 	unregister_sysctl_table(i915->oa_pmu.sysctl_header);
 

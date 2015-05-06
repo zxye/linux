@@ -1587,6 +1587,13 @@ struct i915_oa_reg {
 	u32 value;
 };
 
+struct i915_oa_rcs_node {
+	struct list_head head;
+	struct drm_i915_gem_request *req;
+	u32 offset;
+	u32 ctx_id;
+};
+
 extern const struct i915_oa_reg i915_oa_3d_mux_config_hsw[];
 extern const int i915_oa_3d_mux_config_hsw_len;
 extern const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[];
@@ -1912,7 +1919,11 @@ struct drm_i915_private {
 			u8 *addr;
 			int format;
 			int format_size;
+			u32 node_size;
+			u32 node_count;
 		} oa_rcs_buffer;
+		struct list_head node_list;
+		struct work_struct forward_work;
 	} oa_pmu;
 #endif
 
