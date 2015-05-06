@@ -45,6 +45,13 @@ static u32 i915_perf_event_paranoid = true;
 
 #define OA_EXPONENT_MAX 0x3f
 
+#define GEN8_OAREPORT_REASON_TIMER          (1<<19)
+#define GEN8_OAREPORT_REASON_TRIGGER1       (1<<20)
+#define GEN8_OAREPORT_REASON_TRIGGER2       (1<<21)
+#define GEN8_OAREPORT_REASON_CTX_SWITCH     (1<<22)
+#define GEN8_OAREPORT_REASON_GO_TRANSITION  (1<<23)
+#define GEN9_OAREPORT_REASON_CLK_RATIO      (1<<24)
+
 /* for sysctl proc_dointvec_minmax of i915_oa_event_min_timer_exponent */
 static int zero;
 static int oa_exponent_max = OA_EXPONENT_MAX;
@@ -161,7 +168,6 @@ err_size:
 	goto out;
 }
 
-
 static bool gen8_oa_buffer_is_empty(struct drm_i915_private *dev_priv)
 {
 	u32 head = I915_READ(GEN8_OAHEADPTR);
@@ -213,6 +219,9 @@ static bool append_oa_sample(struct i915_perf_event *event,
 
 	/* XXX: could pre-compute this when opening the event... */
 
+	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO)
+		header.size += 4;
+
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
 		header.size += report_size;
 
@@ -223,6 +232,26 @@ static bool append_oa_sample(struct i915_perf_event *event,
 
 	copy_to_user(read_state->buf, &header, sizeof(header));
 	read_state->buf += sizeof(header);
+
+	if (sample_flags & I915_PERF_SAMPLE_SOURCE_INFO) {
+		enum drm_i915_perf_oa_event_source source;
+
+		if (INTEL_INFO(dev_priv)->gen >= 8) {
+			u32 reason = *(u32 *)report;
+
+			if (reason & GEN8_OAREPORT_REASON_CTX_SWITCH)
+				source = I915_PERF_OA_EVENT_SOURCE_CONTEXT_SWITCH;
+			else if (reason & GEN8_OAREPORT_REASON_TIMER)
+			    source = I915_PERF_OA_EVENT_SOURCE_PERIODIC;
+			else
+			    source = I915_PERF_OA_EVENT_SOURCE_UNDEFINED;
+		} else
+			source = I915_PERF_OA_EVENT_SOURCE_PERIODIC;
+
+		if (copy_to_user(read_state->buf, &source, 4))
+			return false;
+		read_state->buf += 4;
+	}
 
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT) {
 		copy_to_user(read_state->buf, report, report_size);
@@ -1434,7 +1463,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 		goto err;
 	}
 
-	known_sample_flags = I915_PERF_SAMPLE_OA_REPORT;
+	known_sample_flags = I915_PERF_SAMPLE_OA_REPORT |
+			     I915_PERF_SAMPLE_SOURCE_INFO;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;

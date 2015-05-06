@@ -1178,6 +1178,13 @@ enum drm_i915_perf_event_type {
 	I915_PERF_EVENT_TYPE_MAX	/* non-ABI */
 };
 
+enum drm_i915_perf_oa_event_source {
+	I915_PERF_OA_EVENT_SOURCE_UNDEFINED,
+	I915_PERF_OA_EVENT_SOURCE_PERIODIC,
+	I915_PERF_OA_EVENT_SOURCE_CONTEXT_SWITCH,
+
+	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
+};
 
 #define I915_OA_FLAG_PERIODIC		(1<<0)
 
@@ -1208,6 +1215,7 @@ struct drm_i915_perf_oa_attr {
 #define I915_PERF_FLAG_DISABLED         (1<<3)
 
 #define I915_PERF_SAMPLE_OA_REPORT	(1<<0)
+#define I915_PERF_SAMPLE_SOURCE_INFO	(1<<1)
 
 struct drm_i915_perf_open_param {
 	/* Such as I915_PERF_OA_EVENT */
@@ -1245,6 +1253,7 @@ enum drm_i915_perf_record_type {
 	 * struct {
 	 *     struct drm_i915_perf_event_header header;
 	 *
+	 *     { u32 source_info; } && I915_PERF_SAMPLE_SOURCE_INFO
 	 *     { u32 oa_report[]; } && I915_PERF_SAMPLE_OA_REPORT
 	 *
 	 * };
