@@ -1880,6 +1880,7 @@ struct drm_i915_private {
 		bool event_active;
 
 		bool periodic;
+		bool async_sample_mode;
 		u32 period_exponent;
 
 		u32 metrics_set;
@@ -1904,6 +1905,16 @@ struct drm_i915_private {
 		} oa_buffer;
 
 		struct i915_oa_ops ops;
+
+		/* Fields for asynchronous OA snapshot capture */
+		struct {
+			struct drm_i915_gem_object *obj;
+			u8 *addr;
+			u32 head;
+			u32 tail;
+			int format;
+			int format_size;
+		} oa_async_buffer;
 	} oa_pmu;
 #endif
 

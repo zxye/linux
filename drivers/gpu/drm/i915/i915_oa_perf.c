@@ -298,19 +298,39 @@ static void gen7_flush_oa_snapshots(struct drm_i915_private *dev_priv,
 }
 
 static void
+oa_async_buffer_destroy(struct drm_i915_private *i915)
+{
+	unsigned long lock_flags;
+
+	mutex_lock(&i915->dev->struct_mutex);
+	vunmap(i915->oa_pmu.oa_async_buffer.addr);
+	i915_gem_object_ggtt_unpin(i915->oa_pmu.oa_async_buffer.obj);
+	drm_gem_object_unreference(&i915->oa_pmu.oa_async_buffer.obj->base);
+	mutex_unlock(&i915->dev->struct_mutex);
+
+	spin_lock_irqsave(&i915->oa_pmu.lock, lock_flags);
+	i915->oa_pmu.oa_async_buffer.obj = NULL;
+	i915->oa_pmu.oa_async_buffer.addr = NULL;
+	spin_unlock_irqrestore(&i915->oa_pmu.lock, lock_flags);
+}
+
+static void
 oa_buffer_destroy(struct drm_i915_private *i915)
 {
-	mutex_lock(&i915->dev->struct_mutex);
+	unsigned long lock_flags;
 
+	mutex_lock(&i915->dev->struct_mutex);
 	vunmap(i915->oa_pmu.oa_buffer.addr);
 	i915_gem_object_ggtt_unpin(i915->oa_pmu.oa_buffer.obj);
 	drm_gem_object_unreference(&i915->oa_pmu.oa_buffer.obj->base);
+	mutex_unlock(&i915->dev->struct_mutex);
 
+	spin_lock_irqsave(&i915->oa_pmu.lock, lock_flags);
 	i915->oa_pmu.oa_buffer.obj = NULL;
 	i915->oa_pmu.oa_buffer.gtt_offset = 0;
 	i915->oa_pmu.oa_buffer.addr = NULL;
+	spin_unlock_irqrestore(&i915->oa_pmu.lock, lock_flags);
 
-	mutex_unlock(&i915->dev->struct_mutex);
 }
 
 static void i915_oa_event_destroy(struct perf_event *event)
@@ -339,6 +359,9 @@ static void i915_oa_event_destroy(struct perf_event *event)
 	I915_WRITE(GDT_CHICKEN_BITS, (I915_READ(GDT_CHICKEN_BITS) &
 				      ~GT_NOA_ENABLE));
 
+	if (dev_priv->oa_pmu.async_sample_mode)
+		oa_async_buffer_destroy(dev_priv);
+
 	oa_buffer_destroy(dev_priv);
 
 	BUG_ON(dev_priv->oa_pmu.exclusive_event != event);
@@ -346,6 +369,59 @@ static void i915_oa_event_destroy(struct perf_event *event)
 
 	intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
 	intel_runtime_pm_put(dev_priv);
+}
+
+static int alloc_obj(struct drm_i915_private *dev_priv,
+				struct drm_i915_gem_object **obj)
+{
+	struct drm_i915_gem_object *bo;
+	int ret;
+
+	/* NB: We over allocate the OA buffer due to the way raw sample data
+	 * gets copied from the gpu mapped circular buffer into the perf
+	 * circular buffer so that only one copy is required.
+	 *
+	 * For each perf sample (raw->size + 4) needs to be 8 byte aligned,
+	 * where the 4 corresponds to the 32bit raw->size member that's
+	 * added to the sample header that userspace sees.
+	 *
+	 * Due to the + 4 for the size member: when we copy a report to the
+	 * userspace facing perf buffer we always copy an additional 4 bytes
+	 * from the subsequent report to make up for the miss alignment, but
+	 * when a report is at the end of the gpu mapped buffer we need to
+	 * read 4 bytes past the end of the buffer.
+	 */
+	intel_runtime_pm_get(dev_priv);
+
+	ret = i915_mutex_lock_interruptible(dev_priv->dev);
+	if (ret)
+		goto out;
+
+	bo = i915_gem_alloc_object(dev_priv->dev, OA_BUFFER_SIZE + PAGE_SIZE);
+	if (bo == NULL) {
+		DRM_ERROR("Failed to allocate OA buffer\n");
+		ret = -ENOMEM;
+		goto unlock;
+	}
+	ret = i915_gem_object_set_cache_level(bo, I915_CACHE_LLC);
+	if (ret)
+		goto err_unref;
+
+	/* PreHSW required 512K alignment, HSW requires 16M */
+	ret = i915_gem_obj_ggtt_pin(bo, SZ_16M, 0);
+	if (ret)
+		goto err_unref;
+
+	*obj = bo;
+	goto unlock;
+
+err_unref:
+	drm_gem_object_unreference(&bo->base);
+unlock:
+	mutex_unlock(&dev_priv->dev->struct_mutex);
+out:
+	intel_runtime_pm_put(dev_priv);
+	return ret;
 }
 
 static void *vmap_oa_buffer(struct drm_i915_gem_object *obj)
@@ -422,42 +498,13 @@ static int init_oa_buffer(struct perf_event *event)
 
 	BUG_ON(dev_priv->oa_pmu.oa_buffer.obj);
 
-	ret = i915_mutex_lock_interruptible(dev_priv->dev);
+	spin_lock_init(&dev_priv->oa_pmu.oa_buffer.flush_lock);
+
+	ret = alloc_obj(dev_priv, &bo);
 	if (ret)
 		return ret;
 
-	spin_lock_init(&dev_priv->oa_pmu.oa_buffer.flush_lock);
-
-	/* NB: We over allocate the OA buffer due to the way raw sample data
-	 * gets copied from the gpu mapped circular buffer into the perf
-	 * circular buffer so that only one copy is required.
-	 *
-	 * For each perf sample (raw->size + 4) needs to be 8 byte aligned,
-	 * where the 4 corresponds to the 32bit raw->size member that's
-	 * added to the sample header that userspace sees.
-	 *
-	 * Due to the + 4 for the size member: when we copy a report to the
-	 * userspace facing perf buffer we always copy an additional 4 bytes
-	 * from the subsequent report to make up for the miss alignment, but
-	 * when a report is at the end of the gpu mapped buffer we need to
-	 * read 4 bytes past the end of the buffer.
-	 */
-	bo = i915_gem_alloc_object(dev_priv->dev, OA_BUFFER_SIZE + PAGE_SIZE);
-	if (bo == NULL) {
-		DRM_ERROR("Failed to allocate OA buffer\n");
-		ret = -ENOMEM;
-		goto unlock;
-	}
 	dev_priv->oa_pmu.oa_buffer.obj = bo;
-
-	ret = i915_gem_object_set_cache_level(bo, I915_CACHE_LLC);
-	if (ret)
-		goto err_unref;
-
-	/* PreHSW required 512K alignment, HSW requires 16M */
-	ret = i915_gem_obj_ggtt_pin(bo, SZ_16M, 0);
-	if (ret)
-		goto err_unref;
 
 	dev_priv->oa_pmu.oa_buffer.gtt_offset = i915_gem_obj_ggtt_offset(bo);
 	dev_priv->oa_pmu.oa_buffer.addr = vmap_oa_buffer(bo);
@@ -468,14 +515,30 @@ static int init_oa_buffer(struct perf_event *event)
 			 dev_priv->oa_pmu.oa_buffer.gtt_offset,
 			 dev_priv->oa_pmu.oa_buffer.addr);
 
-	goto unlock;
+	return 0;
+}
 
-err_unref:
-	drm_gem_object_unreference(&bo->base);
+static int init_async_oa_buffer(struct perf_event *event)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
+	struct drm_i915_gem_object *bo;
+	int ret;
 
-unlock:
-	mutex_unlock(&dev_priv->dev->struct_mutex);
-	return ret;
+	BUG_ON(dev_priv->oa_pmu.oa_async_buffer.obj);
+
+	ret = alloc_obj(dev_priv, &bo);
+	if (ret)
+		return ret;
+
+	dev_priv->oa_pmu.oa_async_buffer.obj = bo;
+
+	dev_priv->oa_pmu.oa_async_buffer.addr = vmap_oa_buffer(bo);
+
+	DRM_DEBUG_DRIVER("OA Async Buffer initialized, vaddr = %p",
+			 dev_priv->oa_pmu.oa_async_buffer.addr);
+
+	return 0;
 }
 
 static enum hrtimer_restart hrtimer_sample(struct hrtimer *hrtimer)
@@ -714,6 +777,7 @@ static int i915_oa_event_init(struct perf_event *event)
 		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 	drm_i915_oa_attr_t oa_attr;
 	u64 report_format;
+	unsigned long lock_flags;
 	int ret = 0;
 
 	if (event->attr.type != event->pmu->type)
@@ -726,11 +790,16 @@ static int i915_oa_event_init(struct perf_event *event)
 	/* To avoid the complexity of having to accurately filter
 	 * counter snapshots and marshal to the appropriate client
 	 * we currently only allow exclusive access */
-	if (dev_priv->oa_pmu.oa_buffer.obj)
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	if (dev_priv->oa_pmu.oa_buffer.obj) {
+		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 		return -EBUSY;
+	}
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 
 	report_format = oa_attr.format;
 	dev_priv->oa_pmu.oa_buffer.format = report_format;
+	dev_priv->oa_pmu.oa_async_buffer.format = report_format;
 	dev_priv->oa_pmu.metrics_set = oa_attr.metrics_set;
 
 	if (IS_HASWELL(dev_priv->dev)) {
@@ -744,6 +813,7 @@ static int i915_oa_event_init(struct perf_event *event)
 			return -EINVAL;
 
 		dev_priv->oa_pmu.oa_buffer.format_size = snapshot_size;
+		dev_priv->oa_pmu.oa_async_buffer.format_size = snapshot_size;
 
 		if (oa_attr.metrics_set > I915_OA_METRICS_SET_MAX)
 			return -EINVAL;
@@ -758,12 +828,23 @@ static int i915_oa_event_init(struct perf_event *event)
 			return -EINVAL;
 
 		dev_priv->oa_pmu.oa_buffer.format_size = snapshot_size;
+		dev_priv->oa_pmu.oa_async_buffer.format_size = snapshot_size;
 
 		if (oa_attr.metrics_set != I915_OA_METRICS_SET_3D)
 			return -EINVAL;
 	} else {
 		BUG(); /* pmu shouldn't have been registered */
 		return -ENODEV;
+	}
+
+	/*
+	 * In case of per batch buffer sampling, we need to check for
+	 * CAP_SYS_ADMIN capability as we profile all the running contexts
+	 */
+	if (oa_attr.batch_buffer_sample) {
+		if (!capable(CAP_SYS_ADMIN))
+			return -EACCES;
+		dev_priv->oa_pmu.async_sample_mode = true;
 	}
 
 	/* Since we are limited to an exponential scale for
@@ -828,6 +909,12 @@ static int i915_oa_event_init(struct perf_event *event)
 	ret = init_oa_buffer(event);
 	if (ret)
 		return ret;
+
+	if (oa_attr.batch_buffer_sample) {
+		ret = init_async_oa_buffer(event);
+		if (ret)
+			return ret;
+	}
 
 	BUG_ON(dev_priv->oa_pmu.exclusive_event);
 	dev_priv->oa_pmu.exclusive_event = event;
