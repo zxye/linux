@@ -1314,6 +1314,7 @@ enum drm_i915_oa_format {
 
 enum drm_i915_perf_oa_event_source {
 	I915_PERF_OA_EVENT_SOURCE_PERIODIC,
+	I915_PERF_OA_EVENT_SOURCE_RCS,
 
 	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
 };
@@ -1358,6 +1359,19 @@ enum drm_i915_perf_property_id {
 	 * specifies the origin of OA report.
 	 */
 	DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE,
+
+	/**
+	 * The value of this property specifies the GPU engine for which
+	 * the samples need to be collected. Specifying this property also
+	 * implies the command stream based sample collection.
+	 */
+	DRM_I915_PERF_PROP_ENGINE,
+
+	/**
+	 * The value of this property set to 1 requests inclusion of context ID
+	 * in the perf sample data.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_CTX_ID,
 
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
@@ -1425,6 +1439,7 @@ enum drm_i915_perf_record_type {
 	 *     struct drm_i915_perf_record_header header;
 	 *
 	 *     { u32 source_info; } && DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE
+	 *     { u32 ctx_id; } && DRM_I915_PERF_PROP_SAMPLE_CTX_ID
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
