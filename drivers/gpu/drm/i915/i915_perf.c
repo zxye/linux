@@ -324,6 +324,7 @@ static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
 };
 
 #define SAMPLE_OA_REPORT      (1<<0)
+#define SAMPLE_OA_SOURCE_INFO	(1<<1)
 
 /**
  * struct perf_open_properties - for validated properties given to open a stream
@@ -658,6 +659,15 @@ static int append_oa_sample(struct i915_perf_stream *stream,
 	if (copy_to_user(buf, &header, sizeof(header)))
 		return -EFAULT;
 	buf += sizeof(header);
+
+	if (sample_flags & SAMPLE_OA_SOURCE_INFO) {
+		enum drm_i915_perf_oa_event_source source =
+				I915_PERF_OA_EVENT_SOURCE_PERIODIC;
+
+		if (copy_to_user(buf, &source, 4))
+			return -EFAULT;
+		buf += 4;
+	}
 
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(buf, report, report_size))
@@ -2030,6 +2040,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	stream->sample_flags |= SAMPLE_OA_REPORT;
 	stream->sample_size += format_size;
 
+	if (props->sample_flags & SAMPLE_OA_SOURCE_INFO) {
+		stream->sample_flags |= SAMPLE_OA_SOURCE_INFO;
+		stream->sample_size += 4;
+	}
+
 	dev_priv->perf.oa.oa_buffer.format_size = format_size;
 	if (WARN_ON(dev_priv->perf.oa.oa_buffer.format_size == 0))
 		return -EINVAL;
@@ -2813,6 +2828,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 
 			props->oa_periodic = true;
 			props->oa_period_exponent = value;
+			break;
+		case DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE:
+			props->sample_flags |= SAMPLE_OA_SOURCE_INFO;
 			break;
 		default:
 			MISSING_CASE(id);
