@@ -801,8 +801,8 @@ static int logical_ring_prepare(struct intel_ringbuffer *ringbuf,
  *
  * Return: non-zero if the ringbuffer is not ready to be written to.
  */
-static int intel_logical_ring_begin(struct intel_ringbuffer *ringbuf,
-				    struct intel_context *ctx, int num_dwords)
+int intel_logical_ring_begin(struct intel_ringbuffer *ringbuf,
+			     struct intel_context *ctx, int num_dwords)
 {
 	struct intel_engine_cs *ring = ringbuf->ring;
 	struct drm_device *dev = ring->dev;
@@ -923,9 +923,13 @@ int intel_execlists_submission(struct drm_device *dev, struct drm_file *file,
 		dev_priv->relative_constants_mode = instp_mode;
 	}
 
+	i915_perf_command_stream_hook(intel_ring_get_request(ring), ctx);
+
 	ret = ring->emit_bb_start(ringbuf, ctx, exec_start, dispatch_flags);
 	if (ret)
 		return ret;
+
+	i915_perf_command_stream_hook(intel_ring_get_request(ring), ctx);
 
 	trace_i915_gem_ring_dispatch(intel_ring_get_request(ring), dispatch_flags);
 
