@@ -1588,6 +1588,13 @@ struct i915_oa_reg {
 	u32 value;
 };
 
+enum i915_oa_event_state {
+	I915_OA_EVENT_INIT,
+	I915_OA_EVENT_STARTED,
+	I915_OA_EVENT_STOP_IN_PROGRESS,
+	I915_OA_EVENT_STOPPED,
+};
+
 struct i915_oa_ops {
        void (*init_oa_buffer)(struct perf_event *event);
        void (*configure_metric_set)(struct perf_event *event);
@@ -1899,7 +1906,7 @@ struct drm_i915_private {
 		struct perf_event *exclusive_event;
 		struct intel_context *specific_ctx;
 		u32 specific_ctx_id;
-		bool event_active;
+		enum i915_oa_event_state event_state;
 
 		bool periodic;
 		bool async_sample_mode;
@@ -1939,6 +1946,7 @@ struct drm_i915_private {
 			u8 *snapshot;
 		} oa_async_buffer;
 		struct work_struct work_timer;
+		struct work_struct work_event_destroy;
 	} oa_pmu;
 #endif
 

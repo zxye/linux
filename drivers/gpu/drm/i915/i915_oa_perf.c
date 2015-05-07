@@ -110,7 +110,7 @@ int i915_oa_async_wait_gpu(struct drm_i915_private *dev_priv)
 	 * Wait for the requests scheduled till now to complete. The refcount
 	 * of the requests is not decremented here. It is expected that the
 	 * refcount is decremented in the subsequest rountine called for
-	 * processing the samples (during either flush or event stop operation)
+	 * processing the samples.
 	 */
 	while ((head % num_nodes) != (tail % num_nodes)) {
 		node = &first_node[head % num_nodes];
@@ -133,6 +133,41 @@ int i915_oa_async_wait_gpu(struct drm_i915_private *dev_priv)
 	return 0;
 }
 
+void i915_oa_async_release_request_ref(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_oa_async_queue_header *hdr =
+		(struct drm_i915_oa_async_queue_header *)
+		dev_priv->oa_pmu.oa_async_buffer.addr;
+	struct drm_i915_oa_async_node *first_node, *node;
+	int ret, head, tail, num_nodes;
+	struct drm_i915_gem_request *req;
+	unsigned long lock_flags;
+
+	first_node = (struct drm_i915_oa_async_node *)
+			((char *)hdr + hdr->data_offset);
+	num_nodes = (hdr->size_in_bytes - hdr->data_offset) /
+			sizeof(*node);
+
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	tail = hdr->node_count;
+	head = dev_priv->oa_pmu.oa_async_buffer.head;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	/* Release references to requests */
+	while ((head % num_nodes) != (tail % num_nodes)) {
+		node = &first_node[head % num_nodes];
+		req = node->node_info.req;
+		if (req) {
+			ret = i915_mutex_lock_interruptible(dev_priv->dev);
+			if (ret)
+				break;
+			i915_gem_request_assign(&node->node_info.req, NULL);
+			mutex_unlock(&dev_priv->dev->struct_mutex);
+			head++;
+		}
+	}
+}
+
 void forward_oa_async_snapshots_work(struct work_struct *__work)
 {
 	struct drm_i915_private *dev_priv =
@@ -150,6 +185,9 @@ void forward_oa_async_snapshots_work(struct work_struct *__work)
 			((char *)hdr + hdr->data_offset);
 	num_nodes = (hdr->size_in_bytes - hdr->data_offset) /
 			sizeof(*node);
+
+	if (dev_priv->oa_pmu.event_state != I915_OA_EVENT_STARTED)
+		return;
 
 	/* Sample the current values of tail and head */
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
@@ -272,7 +310,7 @@ static u32 gen8_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 
 		ctx_id = *(u32 *)(snapshot + 12);
 
-		if (dev_priv->oa_pmu.event_active) {
+		if (dev_priv->oa_pmu.event_state == I915_OA_EVENT_STARTED) {
 
 			/* NB: For Gen 8 we handle per-context report filtering
 			 * ourselves instead of programming the OA unit with a
@@ -393,7 +431,7 @@ static u32 gen7_forward_oa_snapshots(struct drm_i915_private *dev_priv,
 
 		/* We currently only allow exclusive access to the counters
 		 * so only have one event to forward too... */
-		if (dev_priv->oa_pmu.event_active)
+		if (dev_priv->oa_pmu.event_state == I915_OA_EVENT_STARTED)
 			forward_one_oa_snapshot_to_event(dev_priv, snapshot,
 							 exclusive_event);
 	}
@@ -409,6 +447,9 @@ static void gen7_flush_oa_snapshots(struct drm_i915_private *dev_priv,
 	u32 oastatus1;
 	u32 head;
 	u32 tail;
+
+	if (dev_priv->oa_pmu.event_state == I915_OA_EVENT_STOPPED)
+		return;
 
 	/* Can either flush via hrtimer callback or pmu methods/fops */
 	if (skip_if_flushing) {
@@ -498,15 +539,101 @@ static void i915_oa_event_destroy(struct perf_event *event)
 
 	WARN_ON(event->parent);
 
-	/* Stop updating oacontrol via _oa_context_pin_[un]notify()... */
+
+	if (dev_priv->oa_pmu.async_sample_mode) {
+		cancel_work_sync(&dev_priv->oa_pmu.work_timer);
+		schedule_work(&dev_priv->oa_pmu.work_event_destroy);
+	} else {
+		/* Stop updating oacontrol via _oa_context_pin_[un]notify() */
+		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+		dev_priv->oa_pmu.specific_ctx = NULL;
+		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+		/* Don't let the compiler start resetting OA, PM and clock
+		 * gating state before we've stopped update_oacontrol()
+		 */
+		barrier();
+
+		BUG_ON(dev_priv->oa_pmu.exclusive_event != event);
+		dev_priv->oa_pmu.exclusive_event = NULL;
+
+		oa_buffer_destroy(dev_priv);
+
+		I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
+					  ~GEN6_CSUNIT_CLOCK_GATE_DISABLE));
+		I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) |
+					    GEN7_DOP_CLOCK_GATE_ENABLE));
+
+		I915_WRITE(GDT_CHICKEN_BITS, (I915_READ(GDT_CHICKEN_BITS) &
+					      ~GT_NOA_ENABLE));
+
+		intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
+		intel_runtime_pm_put(dev_priv);
+	}
+}
+
+void i915_oa_async_event_destroy_work(struct work_struct *__work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(__work, typeof(*dev_priv),
+			oa_pmu.work_event_destroy);
+	unsigned long lock_flags;
+	int ret;
+
+	/* Stop updating oacontrol via _oa_context_pin_[un]notify()
+	 * TODO: Is this reqd here?
+	 */
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 	dev_priv->oa_pmu.specific_ctx = NULL;
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 
-	/* Don't let the compiler start resetting OA, PM and clock gating
-	 * state before we've stopped update_oacontrol()
+	/* Don't let the compiler start resetting OA, PM and clock
+	 * gating state before we've stopped update_oacontrol()
 	 */
 	barrier();
+
+	dev_priv->oa_pmu.exclusive_event = NULL;
+
+	ret = i915_oa_async_wait_gpu(dev_priv);
+	if (ret)
+		goto out;
+
+	i915_oa_async_release_request_ref(dev_priv);
+
+out:
+	/*
+	 * Disable OA unit, by calling gen specific disable routines.
+	 * Can't use the oa_pmu.ops.event_stop function here, since event
+	 * may have already been destroyed by the time control reaches here
+	 */
+	if (IS_HASWELL(dev_priv->dev))
+		I915_WRITE(GEN7_OACONTROL, 0);
+	else
+		I915_WRITE(GEN8_OACONTROL, 0);
+
+	/* Buffer destroy is called from work fn, as opposed to event_destroy
+	 * callback. This is because if we rely on just active reference to
+	 * destroy the buffer, the buffer may already be freed up by the time
+	 * we reach here. So, we may not get the chance to free the request
+	 * references, which are a part of the destination buffer.
+	 * For now, dereference the buffer after we're sure to have released
+	 * all request references which the buffer contains.
+	 * TODO: Once we have callbacks in place on completion of request (i.e.
+	 * when retire-notification patches land), we can take the active
+	 * reference on LRI request(submitted for disabling OA) during event
+	 * stop, and perform these actions for decrementing request refcount,
+	 * in the callback instead of work fn, since we would be sure that the
+	 * object would still exist during the callback.
+	 */
+	oa_async_buffer_destroy(dev_priv);
+
+	/* The buffer of periodic samples has to be destroyed here too, since
+	 * this can be done only after OA unit is disabled */
+	oa_buffer_destroy(dev_priv);
+
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	dev_priv->oa_pmu.oa_async_buffer.tail = 0;
+	dev_priv->oa_pmu.oa_async_buffer.head = 0;
 
 	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
 				  ~GEN6_CSUNIT_CLOCK_GATE_DISABLE));
@@ -516,16 +643,10 @@ static void i915_oa_event_destroy(struct perf_event *event)
 	I915_WRITE(GDT_CHICKEN_BITS, (I915_READ(GDT_CHICKEN_BITS) &
 				      ~GT_NOA_ENABLE));
 
-	if (dev_priv->oa_pmu.async_sample_mode)
-		oa_async_buffer_destroy(dev_priv);
-
-	oa_buffer_destroy(dev_priv);
-
-	BUG_ON(dev_priv->oa_pmu.exclusive_event != event);
-	dev_priv->oa_pmu.exclusive_event = NULL;
-
 	intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
 	intel_runtime_pm_put(dev_priv);
+	dev_priv->oa_pmu.event_state = I915_OA_EVENT_INIT;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 }
 
 static int alloc_obj(struct drm_i915_private *dev_priv,
@@ -954,7 +1075,8 @@ static int i915_oa_event_init(struct perf_event *event)
 	 * counter snapshots and marshal to the appropriate client
 	 * we currently only allow exclusive access */
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
-	if (dev_priv->oa_pmu.oa_buffer.obj) {
+	if (dev_priv->oa_pmu.oa_buffer.obj ||
+		dev_priv->oa_pmu.event_state != I915_OA_EVENT_INIT) {
 		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 		return -EBUSY;
 	}
@@ -1130,7 +1252,8 @@ static void gen7_update_oacontrol(struct drm_i915_private *dev_priv)
 {
 	BUG_ON(!spin_is_locked(&dev_priv->oa_pmu.lock));
 
-	if (dev_priv->oa_pmu.event_active) {
+	if ((dev_priv->oa_pmu.event_state == I915_OA_EVENT_STARTED) ||
+	(dev_priv->oa_pmu.event_state == I915_OA_EVENT_STOP_IN_PROGRESS)) {
 		unsigned long ctx_id = 0;
 		bool pinning_ok = false;
 
@@ -1215,11 +1338,31 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 
-	dev_priv->oa_pmu.event_active = true;
+	dev_priv->oa_pmu.event_state = I915_OA_EVENT_STARTED;
 	dev_priv->oa_pmu.ops.event_start(event, flags);
 
 	mmiowb();
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	if (dev_priv->oa_pmu.async_sample_mode) {
+		int ret;
+
+		/* wait for and release references to requests in flight */
+		ret = i915_oa_async_wait_gpu(dev_priv);
+		if (ret)
+			return;
+
+		i915_oa_async_release_request_ref(dev_priv);
+
+		/*
+		 * Reset the head and tail ptr so we don't forward reports from
+		 * before now
+		 */
+		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+		dev_priv->oa_pmu.oa_async_buffer.tail = 0;
+		dev_priv->oa_pmu.oa_async_buffer.head = 0;
+		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+	}
 
 	if (event->attr.sample_period)
 		__hrtimer_start_range_ns(&dev_priv->oa_pmu.timer,
@@ -1251,23 +1394,23 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 	unsigned long lock_flags;
 
-	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
-
-	dev_priv->oa_pmu.event_active = false;
-	dev_priv->oa_pmu.ops.event_stop(event, flags);
-
-	mmiowb();
-	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
-
 	if (event->attr.sample_period) {
 		hrtimer_cancel(&dev_priv->oa_pmu.timer);
 		dev_priv->oa_pmu.ops.flush_oa_snapshots(dev_priv, false);
 	}
 
 	if (dev_priv->oa_pmu.async_sample_mode) {
-		dev_priv->oa_pmu.oa_async_buffer.tail = 0;
-		dev_priv->oa_pmu.oa_async_buffer.head = 0;
+		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+		dev_priv->oa_pmu.event_state = I915_OA_EVENT_STOP_IN_PROGRESS;
+		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+	} else {
+		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+		dev_priv->oa_pmu.event_state = I915_OA_EVENT_STOPPED;
+		dev_priv->oa_pmu.ops.event_stop(event, flags);
+		mmiowb();
+		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 	}
+
 	event->hw.state = PERF_HES_STOPPED;
 }
 
@@ -1447,7 +1590,7 @@ void i915_oa_context_switch_notify(struct drm_i915_private *dev_priv,
 {
 	if (dev_priv->oa_pmu.pmu.event_init == NULL ||
 	    dev_priv->oa_pmu.ops.context_switch_notify == NULL ||
-	    !dev_priv->oa_pmu.event_active)
+	    dev_priv->oa_pmu.event_state != I915_OA_EVENT_STARTED)
 		return;
 
 	dev_priv->oa_pmu.ops.context_switch_notify(dev_priv, ring);
@@ -1504,10 +1647,13 @@ void i915_oa_pmu_register(struct drm_device *dev)
 	i915->oa_pmu.timer.function = hrtimer_sample;
 
 	INIT_WORK(&i915->oa_pmu.work_timer, forward_oa_async_snapshots_work);
+	INIT_WORK(&i915->oa_pmu.work_event_destroy,
+			i915_oa_async_event_destroy_work);
 
 	spin_lock_init(&i915->oa_pmu.lock);
 
 	i915->oa_pmu.pmu.capabilities  = PERF_PMU_CAP_IS_DEVICE;
+	i915->oa_pmu.event_state = I915_OA_EVENT_INIT;
 
 	/* Effectively disallow opening an event with a specific pid
 	 * since we aren't interested in processes running on the cpu...
@@ -1552,8 +1698,10 @@ void i915_oa_pmu_unregister(struct drm_device *dev)
 	if (i915->oa_pmu.pmu.event_init == NULL)
 		return;
 
-	if (i915->oa_pmu.async_sample_mode)
+	if (i915->oa_pmu.async_sample_mode) {
 		cancel_work_sync(&i915->oa_pmu.work_timer);
+		cancel_work_sync(&i915->oa_pmu.work_event_destroy);
+	}
 
 	unregister_sysctl_table(i915->oa_pmu.sysctl_header);
 
