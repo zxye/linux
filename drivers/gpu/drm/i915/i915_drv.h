@@ -1946,6 +1946,21 @@ struct drm_i915_private {
 		int sample_info_flags;
 	} oa_pmu;
 
+	struct {
+		struct pmu pmu;
+		spinlock_t lock;
+		struct hrtimer timer;
+		struct pt_regs dummy_regs;
+		struct perf_event *exclusive_event;
+		bool event_active;
+
+		struct {
+			struct drm_i915_gem_object *obj;
+			u32 gtt_offset;
+			u8 *addr;
+		} buffer;
+	} gen_pmu;
+
 	void (*emit_profiling_data[I915_PROFILE_MAX])
 		(struct drm_i915_gem_request *req, u32 global_ctx_id, u32 tag);
 #endif
@@ -3253,10 +3268,14 @@ int i915_parse_cmds(struct intel_engine_cs *ring,
 /* i915_oa_perf.c */
 #ifdef CONFIG_PERF_EVENTS
 extern void i915_oa_pmu_register(struct drm_device *dev);
+extern void i915_gen_pmu_register(struct drm_device *dev);
 extern void i915_oa_pmu_unregister(struct drm_device *dev);
+extern void i915_gen_pmu_unregister(struct drm_device *dev);
 #else
 static inline void i915_oa_pmu_register(struct drm_device *dev) {}
+static inline void i915_gen_pmu_register(struct drm_device *dev) {}
 static inline void i915_oa_pmu_unregister(struct drm_device *dev) {}
+static inline void i915_gen_pmu_unregister(struct drm_device *dev) {}
 #endif
 
 /* i915_suspend.c */

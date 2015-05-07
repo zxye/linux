@@ -822,6 +822,7 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	 * otherwise i915_oa_context_pin_notify() will lock an un-initialized
 	 * spinlock, upsetting lockdep checks */
 	i915_oa_pmu_register(dev);
+	i915_gen_pmu_register(dev);
 
 	intel_pm_setup(dev);
 
@@ -1072,6 +1073,7 @@ int i915_driver_unload(struct drm_device *dev)
 		return ret;
 	}
 
+	i915_gen_pmu_unregister(dev);
 	i915_oa_pmu_unregister(dev);
 	intel_power_domains_fini(dev_priv);
 
