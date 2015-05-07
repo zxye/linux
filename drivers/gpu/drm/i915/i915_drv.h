@@ -1587,10 +1587,18 @@ struct i915_oa_reg {
 	u32 value;
 };
 
+enum i915_oa_event_state {
+	I915_OA_EVENT_INIT,
+	I915_OA_EVENT_STARTED,
+	I915_OA_EVENT_STOP_IN_PROGRESS,
+	I915_OA_EVENT_STOPPED,
+};
+
 struct i915_oa_rcs_node {
 	struct list_head head;
 	struct drm_i915_gem_request *req;
 	u32 offset;
+	bool discard;
 	u32 ctx_id;
 };
 
@@ -1893,7 +1901,7 @@ struct drm_i915_private {
 
 		struct perf_event *exclusive_event;
 		struct intel_context *specific_ctx;
-		bool event_active;
+		enum i915_oa_event_state event_state;
 
 		bool periodic;
 		bool multiple_ctx_mode;
@@ -1924,6 +1932,7 @@ struct drm_i915_private {
 		} oa_rcs_buffer;
 		struct list_head node_list;
 		struct work_struct forward_work;
+		struct work_struct event_destroy_work;
 	} oa_pmu;
 #endif
 
