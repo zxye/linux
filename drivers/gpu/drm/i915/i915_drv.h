@@ -1814,7 +1814,8 @@ struct i915_perf_stream_ops {
 	 * Routine to emit the commands in the command streamer associated
 	 * with the corresponding gpu engine.
 	 */
-	void (*command_stream_hook)(struct drm_i915_gem_request *req, u32 tag);
+	void (*command_stream_hook)(struct i915_perf_stream *stream,
+				struct drm_i915_gem_request *req, u32 tag);
 };
 
 enum i915_perf_stream_state {
@@ -1838,6 +1839,9 @@ struct i915_perf_stream {
 
 	/* Whether command stream based data collection is enabled */
 	bool cs_mode;
+
+	/* Whether the OA unit is in use */
+	bool using_oa;
 
 	const struct i915_perf_stream_ops *ops;
 };
@@ -1870,7 +1874,16 @@ struct i915_oa_ops {
 struct i915_perf_cs_data_node {
 	struct list_head link;
 	struct drm_i915_gem_request *request;
-	u32 offset;
+
+	/* Offsets into the GEM obj holding the data */
+	u32 start_offset;
+	u32 oa_offset;
+	u32 ts_offset;
+
+	/* buffer size corresponding to this entry */
+	u32 size;
+
+	/* Other metadata */
 	u32 ctx_id;
 	u32 pid;
 	u32 tag;
@@ -2189,14 +2202,14 @@ struct drm_i915_private {
 
 		spinlock_t hook_lock;
 
+
+		struct hrtimer poll_check_timer;
+		struct i915_perf_stream *exclusive_stream;
+		wait_queue_head_t poll_wq[I915_NUM_ENGINES];
+		atomic_t pollin[I915_NUM_ENGINES];
+
 		struct {
-			struct i915_perf_stream *exclusive_stream;
-
 			u32 specific_ctx_id;
-
-			struct hrtimer poll_check_timer;
-			wait_queue_head_t poll_wq;
-			atomic_t pollin;
 
 			bool periodic;
 			int period_exponent;
@@ -2241,13 +2254,13 @@ struct drm_i915_private {
 			u8 *addr;
 #define I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW (1<<0)
 			u32 status;
-		} command_stream_buf;
+		} command_stream_buf[I915_NUM_ENGINES];
 
 		u32 last_ctx_id;
 		u32 last_pid;
 		u32 last_tag;
-		struct list_head node_list;
-		spinlock_t node_list_lock;
+		struct list_head node_list[I915_NUM_ENGINES];
+		spinlock_t node_list_lock[I915_NUM_ENGINES];
 	} perf;
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
