@@ -2045,6 +2045,11 @@ struct i915_perf_stream {
 	bool cs_mode;
 
 	/**
+	 * @using_oa: Whether OA unit is in use for this particular stream
+	 */
+	bool using_oa;
+
+	/**
 	 * @last_request: Contains an RCU guarded pointer to the last request
 	 * associated with the stream, when command stream mode is enabled for
 	 * the stream.
@@ -2156,11 +2161,33 @@ struct i915_perf_cs_sample {
 	struct drm_i915_gem_request *request;
 
 	/**
-	 * @offset: Offset into ``&drm_i915_private->perf.command_stream_buf``
-	 * where the perf metrics will be collected, when the commands inserted
-	 * into the command stream are executed by GPU.
+	 * @start_offset: Offset into ``&drm_i915_private->
+	 * perf.command_stream_buf`` where the metrics for this perf sample
+	 * will be collected, when the commands inserted into the command stream
+	 * are executed by GPU.
 	 */
-	u32 offset;
+	u32 start_offset;
+
+	/**
+	 * @oa_offset: Offset into ``&drm_i915_private->
+	 * perf.command_stream_buf`` where the OA report for this perf sample
+	 * will be collected (if the stream is configured for collection of OA
+	 * samples).
+	 */
+	u32 oa_offset;
+
+	/**
+	 * @ts_offset: Offset into ``&drm_i915_private->
+	 * perf.command_stream_buf`` where the timestamps for this perf sample
+	 * will be collected (if the stream is configured for collection of
+	 * timestamp data)
+	 */
+	u32 ts_offset;
+
+	/**
+	 * @size: buffer size corresponding to this perf sample
+	 */
+	u32 size;
 
 	/**
 	 * @ctx_id: Context ID associated with this perf sample
@@ -2519,14 +2546,13 @@ struct drm_i915_private {
 
 		spinlock_t hook_lock;
 
+		struct hrtimer poll_check_timer;
+		struct i915_perf_stream *exclusive_stream;
+		wait_queue_head_t poll_wq[I915_NUM_ENGINES];
+		bool pollin[I915_NUM_ENGINES];
+
 		struct {
-			struct i915_perf_stream *exclusive_stream;
-
 			u32 specific_ctx_id;
-
-			struct hrtimer poll_check_timer;
-			wait_queue_head_t poll_wq;
-			bool pollin;
 
 			bool periodic;
 			int period_exponent;
@@ -2635,13 +2661,13 @@ struct drm_i915_private {
 			u8 *vaddr;
 #define I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW (1<<0)
 			u32 status;
-		} command_stream_buf;
+		} command_stream_buf[I915_NUM_ENGINES];
 
 		u32 last_cmd_stream_ctx_id;
 		u32 last_pid;
 		u32 last_tag;
-		struct list_head cs_samples;
-		spinlock_t sample_lock;
+		struct list_head cs_samples[I915_NUM_ENGINES];
+		spinlock_t sample_lock[I915_NUM_ENGINES];
 	} perf;
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
