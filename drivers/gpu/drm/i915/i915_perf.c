@@ -52,6 +52,8 @@ static u32 i915_perf_event_paranoid = true;
 #define GEN8_OAREPORT_REASON_GO_TRANSITION  (1<<23)
 #define GEN9_OAREPORT_REASON_CLK_RATIO      (1<<24)
 
+#define I915_PERF_GEN_NODE_SIZE 8
+
 /* Data common to periodic and RCS based samples */
 struct oa_sample_data
 {
@@ -280,6 +282,135 @@ void i915_oa_emit_report(struct drm_i915_gem_request *req,
 		intel_ring_advance(ring);
 	}
 	i915_vma_move_to_active(dev_priv->perf.oa.oa_rcs_buffer.vma, ring);
+}
+
+/*
+ * Emits the commands to capture timestamps, into the CS
+ */
+void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
+				struct intel_context *ctx, u32 tag)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct intel_ringbuffer *ringbuf = req->ringbuf;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct i915_gen_data_node *entry;
+	u32 addr = 0;
+	int ret;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (entry == NULL) {
+		DRM_ERROR("alloc failed\n");
+		return;
+	}
+
+	if (i915.enable_execlists)
+		ret = intel_logical_ring_begin(ringbuf, ctx, 6);
+	else
+		ret = intel_ring_begin(ring, 6);
+
+	if (ret) {
+		kfree(entry);
+		return;
+	}
+
+	entry->ctx_id = ctx->global_id;
+	entry->pid = current->pid;
+	entry->tag = tag;
+	i915_gem_request_assign(&entry->request, req);
+
+	spin_lock(&dev_priv->perf.gen.node_list_lock);
+	if (list_empty(&dev_priv->perf.gen.node_list[ring->id]))
+		entry->offset = 0;
+	else {
+		struct i915_gen_data_node *last_entry;
+		int max_offset = dev_priv->perf.gen.buffer.node_count *
+					I915_PERF_GEN_NODE_SIZE;
+
+		last_entry = list_last_entry(
+				&dev_priv->perf.gen.node_list[ring->id],
+				struct i915_gen_data_node, link);
+
+		entry->offset = last_entry->offset + I915_PERF_GEN_NODE_SIZE;
+
+		if (entry->offset > max_offset)
+			entry->offset = 0;
+	}
+	list_add_tail(&entry->link, &dev_priv->perf.gen.node_list[ring->id]);
+	spin_unlock(&dev_priv->perf.gen.node_list_lock);
+
+	addr = dev_priv->perf.gen.buffer.vma->node.start + entry->offset;
+
+	if (i915.enable_execlists) {
+		if (ring->id == RCS) {
+			intel_logical_ring_emit(ringbuf,
+						GFX_OP_PIPE_CONTROL(6));
+			intel_logical_ring_emit(ringbuf,
+						PIPE_CONTROL_GLOBAL_GTT_IVB |
+						PIPE_CONTROL_TIMESTAMP_WRITE);
+			intel_logical_ring_emit(ringbuf, addr |
+						PIPE_CONTROL_GLOBAL_GTT);
+			intel_logical_ring_emit(ringbuf, 0);
+			intel_logical_ring_emit(ringbuf, 0);
+			intel_logical_ring_emit(ringbuf, 0);
+		} else {
+			uint32_t cmd;
+
+			cmd = MI_FLUSH_DW + 2; /* Gen8+ */
+
+			cmd |= MI_FLUSH_DW_OP_STAMP;
+
+			intel_logical_ring_emit(ringbuf, cmd);
+			intel_logical_ring_emit(ringbuf, addr |
+						MI_FLUSH_DW_USE_GTT);
+			intel_logical_ring_emit(ringbuf, 0);
+			intel_logical_ring_emit(ringbuf, 0);
+			intel_logical_ring_emit(ringbuf, 0);
+			intel_logical_ring_emit(ringbuf, MI_NOOP);
+		}
+		intel_logical_ring_advance(ringbuf);
+	} else {
+		if (ring->id == RCS) {
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(6));
+			else
+				intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(5));
+			intel_ring_emit(ring,
+					PIPE_CONTROL_GLOBAL_GTT_IVB |
+					PIPE_CONTROL_TIMESTAMP_WRITE);
+			intel_ring_emit(ring, addr | PIPE_CONTROL_GLOBAL_GTT);
+			intel_ring_emit(ring, 0);
+			if (INTEL_INFO(ring->dev)->gen >= 8) {
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, 0);
+			} else {
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, MI_NOOP);
+			}
+		} else {
+			uint32_t cmd;
+
+			cmd = MI_FLUSH_DW + 1;
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				cmd += 1;
+
+			cmd |= MI_FLUSH_DW_OP_STAMP;
+
+			intel_ring_emit(ring, cmd);
+			intel_ring_emit(ring, addr | MI_FLUSH_DW_USE_GTT);
+			if (INTEL_INFO(ring->dev)->gen >= 8) {
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, 0);
+			} else {
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, 0);
+				intel_ring_emit(ring, MI_NOOP);
+			}
+			intel_ring_emit(ring, MI_NOOP);
+		}
+		intel_ring_advance(ring);
+	}
+	i915_vma_move_to_active(dev_priv->perf.gen.buffer.vma, ring);
 }
 
 static int i915_oa_rcs_wait_gpu(struct drm_i915_private *dev_priv)
@@ -810,6 +941,22 @@ static void i915_oa_read(struct i915_perf_event *event,
 }
 
 static void
+free_gen_buffer(struct drm_i915_private *i915)
+{
+	mutex_lock(&i915->dev->struct_mutex);
+
+	vunmap(i915->perf.gen.buffer.addr);
+	i915_gem_object_ggtt_unpin(i915->perf.gen.buffer.obj);
+	drm_gem_object_unreference(&i915->perf.gen.buffer.obj->base);
+
+	i915->perf.gen.buffer.obj = NULL;
+	i915->perf.gen.buffer.vma = NULL;
+	i915->perf.gen.buffer.addr = NULL;
+
+	mutex_unlock(&i915->dev->struct_mutex);
+}
+
+static void
 free_oa_rcs_buffer(struct drm_i915_private *i915)
 {
 	mutex_lock(&i915->dev->struct_mutex);
@@ -1006,6 +1153,35 @@ static int alloc_oa_rcs_buffer(struct drm_i915_private *dev_priv)
 		"OA RCS Buffer initialized, gtt offset = 0x%x, vaddr = %p",
 		 (unsigned int)dev_priv->perf.oa.oa_rcs_buffer.vma->node.start,
 		 dev_priv->perf.oa.oa_rcs_buffer.addr);
+
+	return 0;
+}
+
+static int alloc_gen_buffer(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_gem_object *bo;
+	int i, ret;
+
+	BUG_ON(dev_priv->perf.gen.buffer.obj);
+
+	ret = alloc_obj(dev_priv, &bo);
+	if (ret)
+		return ret;
+
+	dev_priv->perf.gen.buffer.obj = bo;
+	dev_priv->perf.gen.buffer.vma = i915_gem_obj_to_ggtt(bo);
+	dev_priv->perf.gen.buffer.addr = vmap_oa_buffer(bo);
+
+	for (i = 0; i < I915_NUM_RINGS; i++)
+		INIT_LIST_HEAD(&dev_priv->perf.gen.node_list[i]);
+
+	dev_priv->perf.gen.buffer.node_count = bo->base.size /
+					I915_PERF_GEN_NODE_SIZE;
+
+	DRM_DEBUG_DRIVER(
+		"Gen Buffer initialized, gtt offset = 0x%x, vaddr = %p",
+			 (u32)dev_priv->perf.gen.buffer.vma->node.start,
+			 dev_priv->perf.gen.buffer.addr);
 
 	return 0;
 }
@@ -1402,6 +1578,11 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 		return -EINVAL;
 	}
 
+	if (param->sample_flags & I915_PERF_SAMPLE_TIMESTAMP) {
+		DRM_ERROR("Timestamp sample type not supported for OA event\n");
+		return -EINVAL;
+	}
+
 	if ((IS_HASWELL(dev_priv->dev) &&
 	     (param->sample_flags & I915_PERF_SAMPLE_CTXID)) ||
 	    (param->sample_flags & I915_PERF_SAMPLE_PID) ||
@@ -1470,6 +1651,293 @@ err_config:
 	dev_priv->perf.oa.exclusive_event = NULL;
 
 	return ret;
+}
+
+static int i915_gen_wait_gpu(struct drm_i915_private *dev_priv)
+{
+	struct i915_gen_data_node *last_entry = NULL;
+	int i, ret;
+
+	/*
+	 * Wait for the last scheduled request to complete on all engines.
+	 * The refcount of the requests is not decremented here.
+	 */
+	for (i = 0; i < I915_NUM_RINGS; i++) {
+		last_entry = NULL;
+
+		spin_lock(&dev_priv->perf.gen.node_list_lock);
+		if (!list_empty(&dev_priv->perf.gen.node_list[i])) {
+			last_entry = list_last_entry(
+					&dev_priv->perf.gen.node_list[i],
+					struct i915_gen_data_node, link);
+		}
+		spin_unlock(&dev_priv->perf.gen.node_list_lock);
+
+		if (!last_entry)
+			continue;
+
+		ret = __i915_wait_request(last_entry->request, atomic_read(
+					&dev_priv->gpu_error.reset_counter),
+					true, NULL, NULL);
+		if (ret) {
+			DRM_ERROR("failed to wait\n");
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void i915_gen_free_requests(struct drm_i915_private *dev_priv)
+{
+	struct i915_gen_data_node *entry, *next;
+	int i;
+
+	for (i = 0; i < I915_NUM_RINGS; i++) {
+		list_for_each_entry_safe(entry, next,
+				&dev_priv->perf.gen.node_list[i], link) {
+			i915_gem_request_unreference__unlocked(entry->request);
+
+			spin_lock(&dev_priv->perf.gen.node_list_lock);
+			list_del(&entry->link);
+			spin_unlock(&dev_priv->perf.gen.node_list_lock);
+			kfree(entry);
+		}
+	}
+}
+
+static bool append_gen_sample(struct i915_perf_event *event,
+			     struct i915_perf_read_state *read_state,
+			     struct i915_gen_data_node *node)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	struct drm_i915_perf_event_header header;
+	u32 sample_flags = event->sample_flags;
+	u8 *ts = dev_priv->perf.gen.buffer.addr + node->offset;
+
+	header.type = DRM_I915_PERF_RECORD_SAMPLE;
+	header.misc = 0;
+	header.size = sizeof(header);
+
+	/* XXX: could pre-compute this when opening the event... */
+
+	if (sample_flags & I915_PERF_SAMPLE_CTXID)
+		header.size += 4;
+
+	if (sample_flags & I915_PERF_SAMPLE_PID)
+		header.size += 4;
+
+	if (sample_flags & I915_PERF_SAMPLE_TAG)
+		header.size += 4;
+
+	if (sample_flags & I915_PERF_SAMPLE_TIMESTAMP)
+		header.size += 8;
+
+	if ((read_state->count - read_state->read) < header.size)
+		return false;
+
+	if (copy_to_user(read_state->buf, &header, sizeof(header)))
+		return false;
+
+	read_state->buf += sizeof(header);
+
+	if (sample_flags & I915_PERF_SAMPLE_CTXID) {
+		if (copy_to_user(read_state->buf, &node->ctx_id, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_PID) {
+		if (copy_to_user(read_state->buf, &node->pid, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_TAG) {
+		if (copy_to_user(read_state->buf, &node->tag, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_TIMESTAMP) {
+		if (copy_to_user(read_state->buf, ts, 8))
+			return false;
+		read_state->buf += 8;
+	}
+
+	read_state->read += header.size;
+
+	return true;
+}
+
+static bool gen_buffer_is_empty(struct drm_i915_private *dev_priv)
+{
+	int i;
+	bool is_empty = true;;
+
+	for (i = 0; i < I915_NUM_RINGS; i++)
+		is_empty &= list_empty(&dev_priv->perf.gen.node_list[i]);
+
+	return is_empty;
+}
+
+static void i915_gen_event_destroy(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	BUG_ON(event != dev_priv->perf.gen.exclusive_event);
+
+	free_gen_buffer(dev_priv);
+
+	dev_priv->perf.gen.exclusive_event = NULL;
+}
+
+static void i915_gen_event_enable(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	event->emit_profiling_data = i915_gen_emit_ts_data;
+
+	hrtimer_start(&dev_priv->perf.gen.poll_check_timer,
+			ns_to_ktime(POLL_PERIOD), HRTIMER_MODE_REL_PINNED);
+}
+
+static void i915_gen_event_disable(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	event->emit_profiling_data = NULL;
+	i915_gen_wait_gpu(dev_priv);
+	i915_gen_free_requests(dev_priv);
+
+	hrtimer_cancel(&dev_priv->perf.gen.poll_check_timer);
+}
+
+static bool i915_gen_can_read(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	return !gen_buffer_is_empty(dev_priv);
+}
+
+static int i915_gen_wait_unlocked(struct i915_perf_event *event)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	int ret;
+
+	ret = i915_gen_wait_gpu(dev_priv);
+	if (ret)
+		return ret;
+
+	/* Note: the gen_buffer_is_empty() condition is ok to run unlocked as
+	 * it's assumed we're handling some operation that implies the event
+	 * can't be destroyed until completion (such as a read()) that ensures
+	 * the device + buffer can't disappear
+	 */
+	return wait_event_interruptible(dev_priv->perf.gen.poll_wq,
+					!gen_buffer_is_empty(dev_priv));
+}
+
+static void i915_gen_poll_wait(struct i915_perf_event *event,
+			      struct file *file,
+			      poll_table *wait)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+
+	poll_wait(file, &dev_priv->perf.gen.poll_wq, wait);
+}
+
+static void i915_gen_read(struct i915_perf_event *event,
+			 struct i915_perf_read_state *read_state)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	struct i915_gen_data_node *entry, *next;
+	int i;
+
+	if (!dev_priv->perf.gen.exclusive_event->enabled)
+		return;
+
+	for (i = 0; i < I915_NUM_RINGS; i++) {
+		list_for_each_entry_safe (entry, next,
+				&dev_priv->perf.gen.node_list[i], link) {
+			if (!i915_gem_request_completed(entry->request, true))
+				break;
+
+			if (!append_gen_sample(event, read_state, entry))
+				break;
+
+			spin_lock(&dev_priv->perf.gen.node_list_lock);
+			list_del(&entry->link);
+			spin_unlock(&dev_priv->perf.gen.node_list_lock);
+
+			i915_gem_request_unreference__unlocked(entry->request);
+			kfree(entry);
+		}
+	}
+}
+
+static enum hrtimer_restart gen_poll_check_timer_cb(struct hrtimer *hrtimer)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(hrtimer, typeof(*dev_priv),
+			     perf.gen.poll_check_timer);
+
+	if (!gen_buffer_is_empty(dev_priv))
+		wake_up(&dev_priv->perf.gen.poll_wq);
+
+	hrtimer_forward_now(hrtimer, ns_to_ktime(POLL_PERIOD));
+
+	return HRTIMER_RESTART;
+}
+
+static int i915_gen_event_init(struct i915_perf_event *event,
+			      struct drm_i915_perf_open_param *param)
+{
+	struct drm_i915_private *dev_priv = event->dev_priv;
+	int ret;
+
+	BUG_ON(param->type != I915_PERF_GEN_EVENT);
+
+	/* To avoid the complexity of having to accurately filter
+	 * reports and marshal to the appropriate client
+	 * we currently only allow exclusive access */
+	if (dev_priv->perf.gen.exclusive_event) {
+		DRM_ERROR("Gen perf event already in use\n");
+		return -EBUSY;
+	}
+
+	if ((param->sample_flags & I915_PERF_SAMPLE_OA_REPORT) ||
+		(param->sample_flags & I915_PERF_SAMPLE_SOURCE_INFO)) {
+		DRM_ERROR("Unsupported sample type for Gen perf event\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * We check dev.i915.perf_event_paranoid sysctl option
+	 * to determine if it's ok to access system wide OA counters
+	 * without CAP_SYS_ADMIN privileges.
+	 */
+	if (i915_perf_event_paranoid && !capable(CAP_SYS_ADMIN)) {
+		DRM_ERROR("Insufficient privileges to open perf event\n");
+		return -EACCES;
+	}
+
+	spin_lock_init(&dev_priv->perf.gen.node_list_lock);
+
+	ret = alloc_gen_buffer(dev_priv);
+	if (ret)
+		return ret;
+
+	dev_priv->perf.gen.exclusive_event = event;
+
+	event->destroy = i915_gen_event_destroy;
+	event->enable = i915_gen_event_enable;
+	event->disable = i915_gen_event_disable;
+	event->can_read = i915_gen_can_read;
+	event->wait_unlocked = i915_gen_wait_unlocked;
+	event->poll_wait = i915_gen_poll_wait;
+	event->read = i915_gen_read;
+
+	return 0;
 }
 
 static void gen7_update_specific_hw_ctx_id(struct drm_i915_private *dev_priv,
@@ -1871,7 +2339,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 			     I915_PERF_SAMPLE_SOURCE_INFO |
 			     I915_PERF_SAMPLE_CTXID |
 			     I915_PERF_SAMPLE_PID |
-			     I915_PERF_SAMPLE_TAG;
+			     I915_PERF_SAMPLE_TAG |
+			     I915_PERF_SAMPLE_TIMESTAMP;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;
@@ -1914,6 +2383,11 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 	switch (param->type) {
 	case I915_PERF_OA_EVENT:
 		ret = i915_oa_event_init(event, param);
+		if (ret)
+			goto err_alloc;
+		break;
+	case I915_PERF_GEN_EVENT:
+		ret = i915_gen_event_init(event, param);
 		if (ret)
 			goto err_alloc;
 		break;
@@ -2031,6 +2505,11 @@ void i915_perf_init(struct drm_device *dev)
 		     CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	dev_priv->perf.oa.poll_check_timer.function = poll_check_timer_cb;
 	init_waitqueue_head(&dev_priv->perf.oa.poll_wq);
+
+	hrtimer_init(&dev_priv->perf.gen.poll_check_timer,
+		     CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	dev_priv->perf.gen.poll_check_timer.function = gen_poll_check_timer_cb;
+	init_waitqueue_head(&dev_priv->perf.gen.poll_wq);
 
 	INIT_LIST_HEAD(&dev_priv->perf.events);
 	mutex_init(&dev_priv->perf.lock);

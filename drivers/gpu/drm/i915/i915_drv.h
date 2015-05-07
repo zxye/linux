@@ -1717,6 +1717,15 @@ struct i915_oa_rcs_node {
 	u32 tag;
 };
 
+struct i915_gen_data_node {
+	struct list_head link;
+	struct drm_i915_gem_request *request;
+	u32 offset;
+	u32 ctx_id;
+	u32 pid;
+	u32 tag;
+};
+
 struct drm_i915_private {
 	struct drm_device *dev;
 	struct kmem_cache *objects;
@@ -2037,6 +2046,22 @@ struct drm_i915_private {
 			struct list_head node_list;
 			spinlock_t node_list_lock;
 		} oa;
+
+		struct {
+			struct i915_perf_event *exclusive_event;
+
+			struct hrtimer poll_check_timer;
+			wait_queue_head_t poll_wq;
+
+			struct {
+				struct drm_i915_gem_object *obj;
+				struct i915_vma *vma;
+				u8 *addr;
+				u32 node_count;
+			} buffer;
+			struct list_head node_list[I915_NUM_RINGS];
+			spinlock_t node_list_lock;
+		} gen;
 
 		struct list_head events;
 	} perf;
