@@ -998,13 +998,13 @@ int intel_execlists_submission(struct i915_execbuffer_params *params,
 	exec_start = params->batch_obj_vm_offset +
 		     args->batch_start_offset;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	ret = ring->emit_bb_start(params->request, exec_start, params->dispatch_flags);
 	if (ret)
 		return ret;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	trace_i915_gem_ring_dispatch(params->request, params->dispatch_flags);
 
