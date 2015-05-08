@@ -59,6 +59,7 @@ struct oa_sample_data {
 	u32 source;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 	const u8 *report;
 };
 
@@ -101,6 +102,7 @@ static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
 #define SAMPLE_OA_SOURCE_INFO	(1<<1)
 #define SAMPLE_CTX_ID		(1<<2)
 #define SAMPLE_PID		(1<<3)
+#define SAMPLE_TAG		(1<<4)
 
 struct perf_open_properties {
 	u32 sample_flags;
@@ -125,7 +127,7 @@ struct perf_open_properties {
  * perf mutex lock.
  */
 
-void i915_perf_command_stream_hook(struct drm_i915_gem_request *req)
+void i915_perf_command_stream_hook(struct drm_i915_gem_request *req, u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
@@ -137,7 +139,7 @@ void i915_perf_command_stream_hook(struct drm_i915_gem_request *req)
 	mutex_lock(&dev_priv->perf.streams_lock);
 	list_for_each_entry(stream, &dev_priv->perf.streams, link) {
 		if (stream->enabled && stream->command_stream_hook)
-			stream->command_stream_hook(req);
+			stream->command_stream_hook(req, tag);
 	}
 	mutex_unlock(&dev_priv->perf.streams_lock);
 }
@@ -251,7 +253,8 @@ out_unlock:
 	return ret;
 }
 
-static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
+static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req,
+						u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct intel_ringbuffer *ringbuf = req->ringbuf;
@@ -283,6 +286,7 @@ static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
 
 	entry->ctx_id = ctx->global_id;
 	entry->pid = current->pid;
+	entry->tag = tag;
 	i915_gem_request_assign(&entry->request, req);
 
 	addr = dev_priv->perf.command_stream_buf.vma->node.start +
@@ -538,6 +542,12 @@ static int append_oa_sample(struct i915_perf_stream *stream,
 		buf += 4;
 	}
 
+	if (sample_flags & SAMPLE_TAG) {
+		if (copy_to_user(buf, &data->tag, 4))
+			return -EFAULT;
+		buf += 4;
+	}
+
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(buf, data->report, report_size))
 			return -EFAULT;
@@ -582,6 +592,9 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 
 	if (sample_flags & SAMPLE_PID)
 		data.pid = dev_priv->perf.last_pid;
+
+	if (sample_flags & SAMPLE_TAG)
+		data.tag = dev_priv->perf.last_tag;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -940,6 +953,11 @@ static int append_oa_rcs_sample(struct i915_perf_stream *stream,
 	if (sample_flags & SAMPLE_PID) {
 		data.pid = node->pid;
 		dev_priv->perf.last_pid = node->pid;
+	}
+
+	if (sample_flags & SAMPLE_TAG) {
+		data.tag = node->tag;
+		dev_priv->perf.last_tag = node->tag;
 	}
 
 	if (sample_flags & SAMPLE_OA_REPORT)
@@ -1683,7 +1701,8 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	bool require_oa_unit = props->sample_flags & (SAMPLE_OA_REPORT |
 						      SAMPLE_OA_SOURCE_INFO);
-	bool require_cs_mode = props->sample_flags & SAMPLE_PID;
+	bool require_cs_mode = props->sample_flags & (SAMPLE_PID |
+						      SAMPLE_TAG);
 	bool cs_sample_data = props->sample_flags & SAMPLE_OA_REPORT;
 	int ret;
 
@@ -1811,7 +1830,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	}
 
 	if (require_cs_mode && !props->cs_mode) {
-		DRM_ERROR("PID sampling requires a ring to be specified");
+		DRM_ERROR("PID or TAG sampling require a ring to be specified");
 		ret = -EINVAL;
 		goto cs_error;
 	}
@@ -1841,6 +1860,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 
 		if (props->sample_flags & SAMPLE_PID) {
 			stream->sample_flags |= SAMPLE_PID;
+			stream->sample_size += 4;
+		}
+
+		if (props->sample_flags & SAMPLE_TAG) {
+			stream->sample_flags |= SAMPLE_TAG;
 			stream->sample_size += 4;
 		}
 
@@ -2483,6 +2507,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 			break;
 		case DRM_I915_PERF_PROP_SAMPLE_PID:
 			props->sample_flags |= SAMPLE_PID;
+			break;
+		case DRM_I915_PERF_PROP_SAMPLE_TAG:
+			props->sample_flags |= SAMPLE_TAG;
 			break;
 		case DRM_I915_PERF_PROP_MAX:
 			BUG();

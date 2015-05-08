@@ -1309,7 +1309,7 @@ i915_gem_ringbuffer_submission(struct i915_execbuffer_params *params,
 	if (exec_len == 0)
 		exec_len = params->batch_obj->base.size;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	ret = ring->dispatch_execbuffer(params->request,
 					exec_start, exec_len,
@@ -1317,7 +1317,7 @@ i915_gem_ringbuffer_submission(struct i915_execbuffer_params *params,
 	if (ret)
 		return ret;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	trace_i915_gem_ring_dispatch(params->request, params->dispatch_flags);
 
@@ -1636,6 +1636,7 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	params->batch_obj               = batch_obj;
 	params->ctx                     = ctx;
 	params->request                 = req;
+	params->tag			= i915_execbuffer2_get_tag(*args);
 
 	ret = dev_priv->gt.execbuf_submit(params, args, &eb->vmas);
 

@@ -796,6 +796,11 @@ struct drm_i915_gem_execbuffer2 {
 #define i915_execbuffer2_get_context_id(eb2) \
 	((eb2).rsvd1 & I915_EXEC_CONTEXT_ID_MASK)
 
+/* upper 32 bits of rsvd1 field contain tag */
+#define I915_EXEC_TAG_MASK		(0xffffffff00000000UL)
+#define i915_execbuffer2_get_tag(eb2) \
+	((eb2).rsvd1 & I915_EXEC_TAG_MASK)
+
 struct drm_i915_gem_pin {
 	/** Handle of the buffer to be pinned. */
 	__u32 handle;
@@ -1261,6 +1266,12 @@ enum drm_i915_perf_property_id {
 	 */
 	DRM_I915_PERF_PROP_SAMPLE_PID,
 
+	/**
+	 * The value of this property set to 1 requests inclusion of tag in the
+	 * perf sample data.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_TAG,
+
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
 
@@ -1313,6 +1324,7 @@ enum drm_i915_perf_record_type {
 	 *     { u32 source_info; } && DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE
 	 *     { u32 ctx_id; } && DRM_I915_PERF_PROP_SAMPLE_CTX_ID
 	 *     { u32 pid; } && DRM_I915_PERF_PROP_SAMPLE_PID
+	 *     { u32 tag; } && DRM_I915_PERF_PROP_SAMPLE_TAG
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
