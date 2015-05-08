@@ -56,6 +56,7 @@ struct oa_sample_data {
 	u32 source;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 	const u8 *report;
 };
 
@@ -98,6 +99,7 @@ static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
 #define SAMPLE_OA_SOURCE_INFO	(1<<1)
 #define SAMPLE_CTX_ID		(1<<2)
 #define SAMPLE_PID		(1<<3)
+#define SAMPLE_TAG		(1<<4)
 
 struct perf_open_properties
 {
@@ -123,7 +125,7 @@ struct perf_open_properties
  * perf mutex lock.
  */
 
-void i915_perf_command_stream_hook(struct drm_i915_gem_request *req)
+void i915_perf_command_stream_hook(struct drm_i915_gem_request *req, u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
@@ -135,7 +137,7 @@ void i915_perf_command_stream_hook(struct drm_i915_gem_request *req)
 	mutex_lock(&dev_priv->perf.streams_lock);
 	list_for_each_entry(stream, &dev_priv->perf.streams, link) {
 		if (stream->enabled && stream->command_stream_hook)
-			stream->command_stream_hook(req);
+			stream->command_stream_hook(req, tag);
 	}
 	mutex_unlock(&dev_priv->perf.streams_lock);
 }
@@ -227,7 +229,8 @@ static void insert_perf_entry(struct drm_i915_private *dev_priv,
 	spin_unlock(&dev_priv->perf.node_list_lock);
 }
 
-static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
+static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req,
+						u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct intel_ringbuffer *ringbuf = req->ringbuf;
@@ -258,6 +261,7 @@ static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
 
 	entry->ctx_id = ctx->global_id;
 	entry->pid = current->pid;
+	entry->tag = tag;
 	i915_gem_request_assign(&entry->request, req);
 
 	insert_perf_entry(dev_priv, entry);
@@ -414,6 +418,12 @@ static bool append_oa_sample(struct i915_perf_stream *stream,
 		read_state->buf += 4;
 	}
 
+	if (sample_flags & SAMPLE_TAG) {
+		if (copy_to_user(read_state->buf, &data->tag, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(read_state->buf, data->report, report_size))
 			return false;
@@ -458,6 +468,10 @@ static bool append_oa_buffer_sample(struct i915_perf_stream *stream,
 #warning "FIXME: append_oa_buffer_sample: deduce pid for periodic samples based on most recent RCS pid for ctx"
 	if (sample_flags & SAMPLE_PID)
 		data.pid = 0;
+
+#warning "FIXME: append_oa_buffer_sample: deduce tag for periodic samples based on most recent RCS tag for ctx"
+	if (sample_flags & SAMPLE_TAG)
+		data.tag = 0;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -700,6 +714,9 @@ static bool append_oa_rcs_sample(struct i915_perf_stream *stream,
 
 	if (sample_flags & SAMPLE_PID)
 		data.pid = node->pid;
+
+	if (sample_flags & SAMPLE_TAG)
+		data.tag = node->tag;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1323,7 +1340,8 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	bool require_oa_unit = props->sample_flags & (SAMPLE_OA_REPORT |
 						      SAMPLE_OA_SOURCE_INFO);
-	bool require_cs_mode = props->sample_flags & SAMPLE_PID;
+	bool require_cs_mode = props->sample_flags & (SAMPLE_PID |
+						      SAMPLE_TAG);
 	int format_size;
 	int ret;
 
@@ -1434,7 +1452,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	}
 
 	if (require_cs_mode && !props->cs_mode) {
-		DRM_ERROR("PID sampling requires a ring to be specified");
+		DRM_ERROR("PID or TAG sampling require a ring to be specified");
 		ret = -EINVAL;
 		goto cs_error;
 	}
@@ -1457,6 +1475,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 
 		if (props->sample_flags & SAMPLE_PID) {
 			stream->sample_flags |= SAMPLE_PID;
+			stream->sample_size += 4;
+		}
+
+		if (props->sample_flags & SAMPLE_TAG) {
+			stream->sample_flags |= SAMPLE_TAG;
 			stream->sample_size += 4;
 		}
 
@@ -2081,6 +2104,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 			break;
 		case DRM_I915_PERF_SAMPLE_PID_PROP:
 			props->sample_flags |= SAMPLE_PID;
+			break;
+		case DRM_I915_PERF_SAMPLE_TAG_PROP:
+			props->sample_flags |= SAMPLE_TAG;
 			break;
 		case DRM_I915_PERF_PROP_MAX:
 			BUG();
