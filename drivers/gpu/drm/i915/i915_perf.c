@@ -290,6 +290,7 @@ struct oa_sample_data {
 	u32 source;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 	const u8 *report;
 };
 
@@ -344,6 +345,7 @@ static const enum intel_engine_id user_ring_map[I915_USER_RINGS + 1] = {
 #define SAMPLE_OA_SOURCE_INFO	(1<<1)
 #define SAMPLE_CTX_ID		(1<<2)
 #define SAMPLE_PID		(1<<3)
+#define SAMPLE_TAG		(1<<4)
 
 /**
  * struct perf_open_properties - for validated properties given to open a stream
@@ -387,7 +389,8 @@ struct perf_open_properties {
  * The function provides a hook through which the commands to capture perf
  * metrics, are inserted into the command stream of a GPU engine.
  */
-void i915_perf_command_stream_hook(struct drm_i915_gem_request *request)
+void i915_perf_command_stream_hook(struct drm_i915_gem_request *request,
+					u32 tag)
 {
 	struct intel_engine_cs *engine = request->engine;
 	struct drm_i915_private *dev_priv = engine->i915;
@@ -400,7 +403,7 @@ void i915_perf_command_stream_hook(struct drm_i915_gem_request *request)
 	list_for_each_entry(stream, &dev_priv->perf.streams, link) {
 		if ((stream->state == I915_PERF_STREAM_ENABLED) &&
 					stream->cs_mode)
-			stream->ops->command_stream_hook(stream, request);
+			stream->ops->command_stream_hook(stream, request, tag);
 	}
 	mutex_unlock(&dev_priv->perf.streams_lock);
 }
@@ -510,10 +513,11 @@ static void insert_perf_sample(struct drm_i915_private *dev_priv,
  * metrics into the render command stream
  * @stream: An i915-perf stream opened for OA metrics
  * @request: request in whose context the metrics are being collected.
- *
+ * @tag: userspace provided tag to be associated with the perf sample
  */
 static void i915_perf_command_stream_hook_oa(struct i915_perf_stream *stream,
-					struct drm_i915_gem_request *request)
+					struct drm_i915_gem_request *request,
+					u32 tag)
 {
 	struct drm_i915_private *dev_priv = request->i915;
 	struct i915_gem_context *ctx = request->ctx;
@@ -535,6 +539,7 @@ static void i915_perf_command_stream_hook_oa(struct i915_perf_stream *stream,
 
 	sample->ctx_id = ctx->hw_id;
 	sample->pid = current->pid;
+	sample->tag = tag;
 	i915_gem_request_assign(&sample->request, request);
 
 	insert_perf_sample(dev_priv, sample);
@@ -986,6 +991,12 @@ static int append_oa_sample(struct i915_perf_stream *stream,
 		buf += 4;
 	}
 
+	if (sample_flags & SAMPLE_TAG) {
+		if (copy_to_user(buf, &data->tag, 4))
+			return -EFAULT;
+		buf += 4;
+	}
+
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(buf, data->report, report_size))
 			return -EFAULT;
@@ -1024,6 +1035,9 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 
 	if (sample_flags & SAMPLE_PID)
 		data.pid = dev_priv->perf.last_pid;
+
+	if (sample_flags & SAMPLE_TAG)
+		data.tag = dev_priv->perf.last_tag;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1604,6 +1618,11 @@ static int append_oa_rcs_sample(struct i915_perf_stream *stream,
 	if (sample_flags & SAMPLE_PID) {
 		data.pid = node->pid;
 		dev_priv->perf.last_pid = node->pid;
+	}
+
+	if (sample_flags & SAMPLE_TAG) {
+		data.tag = node->tag;
+		dev_priv->perf.last_tag = node->tag;
 	}
 
 	if (sample_flags & SAMPLE_OA_REPORT)
@@ -2682,7 +2701,8 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	bool require_oa_unit = props->sample_flags & (SAMPLE_OA_REPORT |
 						      SAMPLE_OA_SOURCE_INFO);
-	bool require_cs_mode = props->sample_flags & SAMPLE_PID;
+	bool require_cs_mode = props->sample_flags & (SAMPLE_PID |
+						      SAMPLE_TAG);
 	bool cs_sample_data = props->sample_flags & SAMPLE_OA_REPORT;
 	int ret;
 
@@ -2819,7 +2839,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	}
 
 	if (require_cs_mode && !props->cs_mode) {
-		DRM_ERROR("PID sampling requires a ring to be specified");
+		DRM_ERROR("PID/TAG sampling requires a ring to be specified");
 		ret = -EINVAL;
 		goto err_enable;
 	}
@@ -2848,6 +2868,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 
 		if (props->sample_flags & SAMPLE_PID) {
 			stream->sample_flags |= SAMPLE_PID;
+			stream->sample_size += 4;
+		}
+
+		if (props->sample_flags & SAMPLE_TAG) {
+			stream->sample_flags |= SAMPLE_TAG;
 			stream->sample_size += 4;
 		}
 
@@ -3647,6 +3672,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 			break;
 		case DRM_I915_PERF_PROP_SAMPLE_PID:
 			props->sample_flags |= SAMPLE_PID;
+			break;
+		case DRM_I915_PERF_PROP_SAMPLE_TAG:
+			props->sample_flags |= SAMPLE_TAG;
 			break;
 		default:
 			MISSING_CASE(id);

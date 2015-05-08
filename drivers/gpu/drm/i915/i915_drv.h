@@ -1982,7 +1982,8 @@ struct i915_perf_stream_ops {
 	 * the batch buffer.
 	 */
 	void (*command_stream_hook)(struct i915_perf_stream *stream,
-				struct drm_i915_gem_request *request);
+				struct drm_i915_gem_request *request,
+				u32 tag);
 };
 
 enum i915_perf_stream_state {
@@ -2171,6 +2172,17 @@ struct i915_perf_cs_sample {
 	 * submitted, pertaining to this perf sample
 	 */
 	u32 pid;
+
+	/**
+	 * @tag: Tag associated with workload, for which the perf sample is
+	 * being collected.
+	 *
+	 * Userspace can specify tags (provided via execbuffer ioctl), which
+	 * can be associated with the perf samples, and be used to functionally
+	 * distinguish different workload stages, and associate samples with
+	 * these different stages.
+	 */
+	u32 tag;
 };
 
 struct intel_cdclk_state {
@@ -2627,6 +2639,7 @@ struct drm_i915_private {
 
 		u32 last_cmd_stream_ctx_id;
 		u32 last_pid;
+		u32 last_tag;
 		struct list_head cs_samples;
 		spinlock_t sample_lock;
 	} perf;
@@ -3690,7 +3703,7 @@ void i915_oa_init_reg_state(struct intel_engine_cs *engine,
 void i915_oa_update_reg_state(struct intel_engine_cs *engine,
 			      struct i915_gem_context *ctx,
 			      uint32_t *reg_state);
-void i915_perf_command_stream_hook(struct drm_i915_gem_request *req);
+void i915_perf_command_stream_hook(struct drm_i915_gem_request *req, u32 tag);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct i915_address_space *vm,
