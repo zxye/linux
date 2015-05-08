@@ -140,6 +140,16 @@ struct drm_i915_oa_node_tag {
 	__u32 pad;
 };
 
+struct drm_i915_ts_data {
+	__u32 ts_low;
+	__u32 ts_high;
+};
+
+struct drm_i915_ts_node_ctx_id {
+	__u32 ctx_id;
+	__u32 pad;
+};
+
 /* Each region is a minimum of 16k, and there are at most 255 of them.
  */
 #define I915_NR_TEX_REGIONS 255	/* table size 2k - maximum due to use

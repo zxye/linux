@@ -1609,6 +1609,13 @@ struct i915_oa_rcs_node {
 	u32 tag;
 };
 
+struct i915_gen_pmu_node {
+	struct list_head head;
+	struct drm_i915_gem_request *req;
+	u32 offset;
+	u32 ctx_id;
+};
+
 extern const struct i915_oa_reg i915_oa_3d_mux_config_hsw[];
 extern const int i915_oa_3d_mux_config_hsw_len;
 extern const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[];
@@ -1958,7 +1965,11 @@ struct drm_i915_private {
 			struct drm_i915_gem_object *obj;
 			u32 gtt_offset;
 			u8 *addr;
+			u32 node_size;
+			u32 node_count;
 		} buffer;
+		struct list_head node_list;
+		struct work_struct forward_work;
 	} gen_pmu;
 
 	void (*emit_profiling_data[I915_PROFILE_MAX])

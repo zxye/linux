@@ -11,6 +11,9 @@
 #define FREQUENCY 200
 #define PERIOD max_t(u64, 10000, NSEC_PER_SEC / FREQUENCY)
 
+#define TS_DATA_SIZE sizeof(struct drm_i915_ts_data)
+#define CTX_INFO_SIZE sizeof(struct drm_i915_ts_node_ctx_id)
+
 static u32 i915_oa_event_paranoid = true;
 
 static int hsw_perf_format_sizes[] = {
@@ -414,11 +417,113 @@ static void forward_oa_rcs_work_fn(struct work_struct *__work)
 	forward_oa_rcs_snapshots(dev_priv);
 }
 
+static int i915_gen_pmu_wait_gpu(struct drm_i915_private *dev_priv)
+{
+	struct i915_gen_pmu_node *last_entry = NULL;
+	int ret;
+
+	/*
+	 * Wait for the last scheduled request to complete. This would
+	 * implicitly wait for the prior submitted requests. The refcount
+	 * of the requests is not decremented here.
+	 */
+	spin_lock(&dev_priv->gen_pmu.lock);
+
+	if (!list_empty(&dev_priv->gen_pmu.node_list)) {
+		last_entry = list_last_entry(&dev_priv->gen_pmu.node_list,
+			struct i915_gen_pmu_node, head);
+	}
+	spin_unlock(&dev_priv->gen_pmu.lock);
+
+	if (!last_entry)
+		return 0;
+
+	ret = __i915_wait_request(last_entry->req, atomic_read(
+			&dev_priv->gpu_error.reset_counter),
+			true, NULL, NULL);
+	if (ret) {
+		DRM_ERROR("failed to wait\n");
+		return ret;
+	}
+	return 0;
+}
+
+static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
+				struct i915_gen_pmu_node *node)
+{
+	struct perf_sample_data data;
+	struct perf_event *event = dev_priv->gen_pmu.exclusive_event;
+	int snapshot_size;
+	u8 *snapshot;
+	struct drm_i915_ts_node_ctx_id *ctx_info;
+	struct perf_raw_record raw;
+
+	BUILD_BUG_ON(TS_DATA_SIZE != 8);
+	BUILD_BUG_ON(CTX_INFO_SIZE != 8);
+
+	snapshot = dev_priv->gen_pmu.buffer.addr + node->offset;
+	snapshot_size = TS_DATA_SIZE + CTX_INFO_SIZE;
+
+	ctx_info = (struct drm_i915_ts_node_ctx_id *)(snapshot + TS_DATA_SIZE);
+	ctx_info->ctx_id = node->ctx_id;
+
+	/* Note: the raw sample consists of a u32 size member and raw data. The
+	 * combined size of these two fields is required to be 8 byte aligned.
+	 * The size of raw data field is assumed to be 8 byte aligned already.
+	 * Therefore, adding 4 bytes to the raw sample size here.
+	 */
+	BUILD_BUG_ON(((snapshot_size + 4 + sizeof(raw.size)) % 8) != 0);
+
+	perf_sample_data_init(&data, 0, event->hw.last_period);
+	raw.size = snapshot_size + 4;
+	raw.data = snapshot;
+
+	data.raw = &raw;
+	perf_event_overflow(event, &data, &dev_priv->gen_pmu.dummy_regs);
+}
+
+/*
+ * Routine to forward the samples to perf. This may be called from the event
+ * flush and worker thread. This function may sleep, hence can't be called from
+ * atomic contexts directly.
+ */
 static void forward_gen_pmu_snapshots(struct drm_i915_private *dev_priv)
 {
-	WARN_ON(!dev_priv->gen_pmu.buffer.addr);
+	struct i915_gen_pmu_node *entry, *next;
+	LIST_HEAD(deferred_list_free);
+	int ret;
 
-	/* TODO: routine for forwarding snapshots to userspace */
+	list_for_each_entry_safe
+		(entry, next, &dev_priv->gen_pmu.node_list, head) {
+		if (!i915_gem_request_completed(entry->req, true))
+			break;
+
+		forward_one_gen_pmu_sample(dev_priv, entry);
+
+		spin_lock(&dev_priv->gen_pmu.lock);
+		list_move_tail(&entry->head, &deferred_list_free);
+		spin_unlock(&dev_priv->gen_pmu.lock);
+	}
+
+	ret = i915_mutex_lock_interruptible(dev_priv->dev);
+	if (ret)
+		return;
+	while (!list_empty(&deferred_list_free)) {
+		entry = list_first_entry(&deferred_list_free,
+					struct i915_gen_pmu_node, head);
+		i915_gem_request_unreference(entry->req);
+		list_del(&entry->head);
+		kfree(entry);
+	}
+	mutex_unlock(&dev_priv->dev->struct_mutex);
+}
+
+static void forward_gen_pmu_work_fn(struct work_struct *__work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(__work, typeof(*dev_priv), gen_pmu.forward_work);
+
+	forward_gen_pmu_snapshots(dev_priv);
 }
 
 static void
@@ -752,7 +857,7 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), gen_pmu.pmu);
 	struct drm_i915_gem_object *bo;
-	int ret;
+	int ret, node_size;
 
 	BUG_ON(dev_priv->gen_pmu.buffer.obj);
 
@@ -764,6 +869,14 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 	dev_priv->gen_pmu.buffer.gtt_offset =
 				i915_gem_obj_ggtt_offset(bo);
 	dev_priv->gen_pmu.buffer.addr = vmap_oa_buffer(bo);
+	INIT_LIST_HEAD(&dev_priv->gen_pmu.node_list);
+
+	node_size = TS_DATA_SIZE + CTX_INFO_SIZE;
+
+	/* size has to be aligned to 8 bytes */
+	node_size = ALIGN(node_size, 8);
+	dev_priv->gen_pmu.buffer.node_size = node_size;
+	dev_priv->gen_pmu.buffer.node_count = bo->base.size / node_size;
 
 	DRM_DEBUG_DRIVER("Gen PMU Buffer initialized, vaddr = %p",
 			 dev_priv->gen_pmu.buffer.addr);
@@ -776,7 +889,7 @@ static enum hrtimer_restart hrtimer_sample_gen(struct hrtimer *hrtimer)
 	struct drm_i915_private *i915 =
 		container_of(hrtimer, typeof(*i915), gen_pmu.timer);
 
-	forward_gen_pmu_snapshots(i915);
+	schedule_work(&i915->gen_pmu.forward_work);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(PERIOD));
 	return HRTIMER_RESTART;
@@ -1353,7 +1466,7 @@ static void i915_gen_event_stop(struct perf_event *event, int flags)
 	spin_unlock(&dev_priv->gen_pmu.lock);
 
 	hrtimer_cancel(&dev_priv->gen_pmu.timer);
-	forward_gen_pmu_snapshots(dev_priv);
+	schedule_work(&dev_priv->gen_pmu.forward_work);
 
 	event->hw.state = PERF_HES_STOPPED;
 }
@@ -1384,6 +1497,11 @@ static int i915_gen_event_flush(struct perf_event *event)
 {
 	struct drm_i915_private *i915 =
 		container_of(event->pmu, typeof(*i915), gen_pmu.pmu);
+	int ret;
+
+	ret = i915_gen_pmu_wait_gpu(i915);
+	if (ret)
+		return ret;
 
 	forward_gen_pmu_snapshots(i915);
 	return 0;
@@ -1535,6 +1653,7 @@ void i915_gen_pmu_register(struct drm_device *dev)
 	hrtimer_init(&i915->gen_pmu.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	i915->gen_pmu.timer.function = hrtimer_sample_gen;
 
+	INIT_WORK(&i915->gen_pmu.forward_work, forward_gen_pmu_work_fn);
 	spin_lock_init(&i915->gen_pmu.lock);
 
 	i915->gen_pmu.pmu.capabilities  = PERF_PMU_CAP_IS_DEVICE;
@@ -1563,6 +1682,8 @@ void i915_gen_pmu_unregister(struct drm_device *dev)
 
 	if (i915->gen_pmu.pmu.event_init == NULL)
 		return;
+
+	cancel_work_sync(&i915->gen_pmu.forward_work);
 
 	perf_pmu_unregister(&i915->gen_pmu.pmu);
 	i915->gen_pmu.pmu.event_init = NULL;
