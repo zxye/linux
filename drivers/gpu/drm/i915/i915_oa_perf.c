@@ -113,6 +113,79 @@ static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
 	i915_vma_move_to_active(dev_priv->oa_pmu.oa_rcs_buffer.vma, ring);
 }
 
+/*
+ * Emits the commands to capture timestamps, into the CS
+ */
+static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
+			u32 global_ctx_id, u32 tag)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct drm_i915_gem_object *obj = dev_priv->gen_pmu.buffer.obj;
+	struct i915_gen_pmu_node *entry;
+	u32 addr = 0;
+	int ret;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (entry == NULL) {
+		DRM_ERROR("alloc failed\n");
+		return;
+	}
+
+	ret = intel_ring_begin(ring, 6);
+	if (ret) {
+		kfree(entry);
+		return;
+	}
+
+	entry->ctx_id = global_ctx_id;
+	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
+
+	spin_lock(&dev_priv->gen_pmu.lock);
+	if (list_empty(&dev_priv->gen_pmu.node_list))
+		entry->offset = 0;
+	else {
+		struct i915_gen_pmu_node *last_entry;
+		int max_offset = dev_priv->gen_pmu.buffer.node_count *
+				dev_priv->gen_pmu.buffer.node_size;
+
+		last_entry = list_last_entry(&dev_priv->gen_pmu.node_list,
+					struct i915_gen_pmu_node, head);
+		entry->offset = last_entry->offset +
+				dev_priv->gen_pmu.buffer.node_size;
+
+		if (entry->offset > max_offset)
+			entry->offset = 0;
+	}
+	list_add_tail(&entry->head, &dev_priv->gen_pmu.node_list);
+	spin_unlock(&dev_priv->gen_pmu.lock);
+
+	addr = dev_priv->gen_pmu.buffer.gtt_offset + entry->offset;
+
+	if (ring->id == RCS) {
+		intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(5));
+		intel_ring_emit(ring,
+				PIPE_CONTROL_GLOBAL_GTT_IVB |
+				PIPE_CONTROL_TIMESTAMP_WRITE);
+		intel_ring_emit(ring, addr | PIPE_CONTROL_GLOBAL_GTT);
+		intel_ring_emit(ring, 0);
+		intel_ring_emit(ring, 0);
+		intel_ring_emit(ring, MI_NOOP);
+	} else {
+		intel_ring_emit(ring,
+				(MI_FLUSH_DW + 1) | MI_FLUSH_DW_OP_STAMP);
+		intel_ring_emit(ring, addr | MI_FLUSH_DW_USE_GTT);
+		intel_ring_emit(ring, 0);
+		intel_ring_emit(ring, 0);
+		intel_ring_emit(ring, MI_NOOP);
+		intel_ring_emit(ring, MI_NOOP);
+	}
+	intel_ring_advance(ring);
+
+	obj->base.write_domain = I915_GEM_DOMAIN_RENDER;
+	i915_vma_move_to_active(dev_priv->gen_pmu.buffer.vma, ring);
+}
+
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
 					     struct perf_event *event)
@@ -738,6 +811,7 @@ out:
 	spin_lock(&dev_priv->gen_pmu.lock);
 	dev_priv->gen_pmu.buffer.obj = NULL;
 	dev_priv->gen_pmu.buffer.gtt_offset = 0;
+	dev_priv->gen_pmu.buffer.vma = NULL;
 	dev_priv->gen_pmu.buffer.addr = NULL;
 	spin_unlock(&dev_priv->gen_pmu.lock);
 }
@@ -919,6 +993,7 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 	dev_priv->gen_pmu.buffer.obj = bo;
 	dev_priv->gen_pmu.buffer.gtt_offset =
 				i915_gem_obj_ggtt_offset(bo);
+	dev_priv->gen_pmu.buffer.vma = i915_gem_obj_to_ggtt(bo);
 	dev_priv->gen_pmu.buffer.addr = vmap_oa_buffer(bo);
 	INIT_LIST_HEAD(&dev_priv->gen_pmu.node_list);
 
@@ -1504,6 +1579,7 @@ static void i915_gen_event_start(struct perf_event *event, int flags)
 
 	spin_lock(&dev_priv->gen_pmu.lock);
 	dev_priv->gen_pmu.event_active = true;
+	dev_priv->emit_profiling_data[I915_PROFILE_TS] = i915_gen_emit_ts_data;
 	spin_unlock(&dev_priv->gen_pmu.lock);
 
 	__hrtimer_start_range_ns(&dev_priv->gen_pmu.timer, ns_to_ktime(PERIOD),
@@ -1523,6 +1599,7 @@ static void i915_gen_event_stop(struct perf_event *event, int flags)
 
 	spin_lock(&dev_priv->gen_pmu.lock);
 	dev_priv->gen_pmu.event_active = false;
+	dev_priv->emit_profiling_data[I915_PROFILE_TS] = NULL;
 	list_for_each_entry(entry, &dev_priv->gen_pmu.node_list, head)
 		entry->discard = true;
 	spin_unlock(&dev_priv->gen_pmu.lock);

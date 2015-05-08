@@ -1596,6 +1596,7 @@ enum i915_oa_event_state {
 
 enum i915_profile_mode {
 	I915_PROFILE_OA = 0,
+	I915_PROFILE_TS,
 	I915_PROFILE_MAX,
 };
 
@@ -1965,6 +1966,7 @@ struct drm_i915_private {
 		struct {
 			struct drm_i915_gem_object *obj;
 			u32 gtt_offset;
+			struct i915_vma *vma;
 			u8 *addr;
 			u32 node_size;
 			u32 node_count;
