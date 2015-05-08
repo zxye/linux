@@ -1708,6 +1708,7 @@ struct i915_execbuffer_params {
 	struct drm_i915_gem_object      *batch_obj;
 	struct intel_context            *ctx;
 	struct drm_i915_gem_request     *request;
+	uint32_t			tag;
 };
 
 /* used in computing the new watermarks state */
@@ -1796,7 +1797,7 @@ struct i915_perf_stream_ops {
 	 * Routine to emit the commands in the command streamer associated
 	 * with the corresponding gpu engine.
 	 */
-	void (*command_stream_hook)(struct drm_i915_gem_request *req);
+	void (*command_stream_hook)(struct drm_i915_gem_request *req, u32 tag);
 };
 
 enum i915_perf_stream_state {
@@ -1852,6 +1853,7 @@ struct i915_perf_cs_data_node {
 	u32 offset;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 };
 
 struct drm_i915_private {
@@ -2199,6 +2201,7 @@ struct drm_i915_private {
 
 		u32 last_ctx_id;
 		u32 last_pid;
+		u32 last_tag;
 		struct list_head node_list;
 		spinlock_t node_list_lock;
 	} perf;
@@ -3563,7 +3566,7 @@ void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req);
 void i915_oa_update_reg_state(struct intel_engine_cs *engine,
 			      struct intel_context *ctx,
 			      uint32_t *reg_state);
-void i915_perf_command_stream_hook(struct drm_i915_gem_request *req);
+void i915_perf_command_stream_hook(struct drm_i915_gem_request *req, u32 tag);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct drm_device *dev,
