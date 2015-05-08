@@ -923,14 +923,16 @@ int intel_execlists_submission(struct drm_device *dev, struct drm_file *file,
 		dev_priv->relative_constants_mode = instp_mode;
 	}
 
-	i915_emit_profiling_data(intel_ring_get_request(ring), ctx);
+	i915_emit_profiling_data(intel_ring_get_request(ring), ctx,
+				i915_execbuffer2_get_tag(*args));
 
 	ret = ring->emit_bb_start(ringbuf, ctx, exec_start, dispatch_flags);
 	if (ret)
 		return ret;
 
 	/* XXX: what if emit_bb_start fails? */
-	i915_emit_profiling_data(intel_ring_get_request(ring), ctx);
+	i915_emit_profiling_data(intel_ring_get_request(ring), ctx,
+				i915_execbuffer2_get_tag(*args));
 
 	trace_i915_gem_ring_dispatch(intel_ring_get_request(ring), dispatch_flags);
 

@@ -827,6 +827,11 @@ struct drm_i915_gem_execbuffer2 {
 #define i915_execbuffer2_get_context_id(eb2) \
 	((eb2).rsvd1 & I915_EXEC_CONTEXT_ID_MASK)
 
+/* upper 32 bits of rsvd1 field contain tag */
+#define I915_EXEC_TAG_MASK		(0xffffffff00000000UL)
+#define i915_execbuffer2_get_tag(eb2) \
+	((eb2).rsvd1 & I915_EXEC_TAG_MASK)
+
 struct drm_i915_gem_pin {
 	/** Handle of the buffer to be pinned. */
 	__u32 handle;
@@ -1219,6 +1224,7 @@ struct drm_i915_perf_oa_attr {
 #define I915_PERF_SAMPLE_SOURCE_INFO	(1<<1)
 #define I915_PERF_SAMPLE_CTXID		(1<<2)
 #define I915_PERF_SAMPLE_PID		(1<<3)
+#define I915_PERF_SAMPLE_TAG		(1<<4)
 
 struct drm_i915_perf_open_param {
 	/* Such as I915_PERF_OA_EVENT */
@@ -1259,6 +1265,7 @@ enum drm_i915_perf_record_type {
 	 *     { u32 source_info; } && I915_PERF_SAMPLE_SOURCE_INFO
 	 *     { u32 ctx_id; }      && I915_PERF_SAMPLE_CTXID
 	 *     { u32 pid; }	    && I915_PERF_SAMPLE_PID
+	 *     { u32 tag; }	    && I915_PERF_SAMPLE_TAG
 	 *     { u32 oa_report[]; } && I915_PERF_SAMPLE_OA_REPORT
 	 *
 	 * };

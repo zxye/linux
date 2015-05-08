@@ -1690,7 +1690,7 @@ struct i915_perf_event {
 	 * Emit the commands in CS for capturing the profiling data
 	 */
 	void (*emit_profiling_data)(struct drm_i915_gem_request *req,
-				struct intel_context *ctx);
+				struct intel_context *ctx, u32 tag);
 };
 
 struct i915_oa_ops {
@@ -1714,6 +1714,7 @@ struct i915_oa_rcs_node {
 	u32 offset;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 };
 
 struct drm_i915_private {
@@ -3222,7 +3223,7 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 void i915_oa_legacy_ctx_switch_notify(struct intel_engine_cs *ring);
 void i915_oa_update_reg_state(struct intel_engine_cs *ring, uint32_t *reg_state);
 void i915_emit_profiling_data(struct drm_i915_gem_request *req,
-				struct intel_context *ctx);
+				struct intel_context *ctx, u32 tag);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct drm_device *dev,
