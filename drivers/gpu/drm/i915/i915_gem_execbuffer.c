@@ -58,6 +58,7 @@ struct i915_execbuffer_params {
 	struct intel_engine_cs          *engine;
 	struct i915_gem_context         *ctx;
 	struct drm_i915_gem_request     *request;
+	uint32_t			tag;
 };
 
 struct eb_vmas {
@@ -1523,7 +1524,7 @@ execbuf_submit(struct i915_execbuffer_params *params,
 	if (exec_len == 0)
 		exec_len = params->batch->size - params->args_batch_start_offset;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	ret = params->engine->emit_bb_start(params->request,
 					    exec_start, exec_len,
@@ -1531,7 +1532,7 @@ execbuf_submit(struct i915_execbuffer_params *params,
 	if (ret)
 		return ret;
 
-	i915_perf_command_stream_hook(params->request);
+	i915_perf_command_stream_hook(params->request, params->tag);
 
 	trace_i915_gem_ring_dispatch(params->request, params->dispatch_flags);
 
@@ -1843,6 +1844,7 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	params->engine                    = engine;
 	params->dispatch_flags          = dispatch_flags;
 	params->ctx                     = ctx;
+	params->tag			= i915_execbuffer2_get_tag(*args);
 
 	ret = execbuf_submit(params, args, &eb->vmas);
 err_request:
