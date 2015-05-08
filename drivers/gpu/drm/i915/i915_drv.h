@@ -1606,6 +1606,7 @@ struct i915_oa_rcs_node {
 	bool discard;
 	u32 ctx_id;
 	u32 pid;
+	u32 tag;
 };
 
 extern const struct i915_oa_reg i915_oa_3d_mux_config_hsw[];
@@ -1941,11 +1942,12 @@ struct drm_i915_private {
 		struct work_struct forward_work;
 		struct work_struct event_destroy_work;
 #define I915_OA_SAMPLE_PID		(1<<0)
+#define I915_OA_SAMPLE_TAG		(1<<1)
 		int sample_info_flags;
 	} oa_pmu;
 
 	void (*emit_profiling_data[I915_PROFILE_MAX])
-		(struct drm_i915_gem_request *req, u32 global_ctx_id);
+		(struct drm_i915_gem_request *req, u32 global_ctx_id, u32 tag);
 #endif
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
@@ -3127,7 +3129,7 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 				  struct intel_context *context);
 void i915_emit_profiling_data(struct drm_i915_gem_request *req,
-				u32 global_ctx_id);
+				u32 global_ctx_id, u32 tag);
 #else
 static inline void
 i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
@@ -3136,7 +3138,7 @@ static inline void
 i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 			     struct intel_context *context) {}
 void i915_emit_profiling_data(struct drm_i915_gem_request *req,
-				u32 global_ctx_id) {};
+				u32 global_ctx_id, u32 tag) {};
 #endif
 
 /* i915_gem_evict.c */

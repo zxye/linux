@@ -26,7 +26,7 @@ static int hsw_perf_format_sizes[] = {
 };
 
 void i915_emit_profiling_data(struct drm_i915_gem_request *req,
-				u32 global_ctx_id)
+				u32 global_ctx_id, u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
@@ -34,7 +34,8 @@ void i915_emit_profiling_data(struct drm_i915_gem_request *req,
 
 	for (i = I915_PROFILE_OA; i < I915_PROFILE_MAX; i++) {
 		if (dev_priv->emit_profiling_data[i])
-			dev_priv->emit_profiling_data[i](req, global_ctx_id);
+			dev_priv->emit_profiling_data[i](req, global_ctx_id,
+							tag);
 	}
 }
 
@@ -42,7 +43,7 @@ void i915_emit_profiling_data(struct drm_i915_gem_request *req,
  * Emits the commands to capture OA perf report, into the Render CS
  */
 static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
-				u32 global_ctx_id)
+				u32 global_ctx_id, u32 tag)
 {
 	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
@@ -71,6 +72,8 @@ static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
 	entry->ctx_id = global_ctx_id;
 	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_PID)
 		entry->pid = current->pid;
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_TAG)
+		entry->tag = tag;
 	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
@@ -308,6 +311,7 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 	u8 *snapshot, *current_ptr;
 	struct drm_i915_oa_node_ctx_id *ctx_info;
 	struct drm_i915_oa_node_pid *pid_info;
+	struct drm_i915_oa_node_tag *tag_info;
 	struct perf_raw_record raw;
 	u64 snapshot_ts;
 
@@ -323,6 +327,13 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 		pid_info = (struct drm_i915_oa_node_pid *)current_ptr;
 		pid_info->pid = node->pid;
 		snapshot_size += sizeof(*pid_info);
+		current_ptr = snapshot + snapshot_size;
+	}
+
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_TAG) {
+		tag_info = (struct drm_i915_oa_node_tag *)current_ptr;
+		tag_info->tag = node->tag;
+		snapshot_size += sizeof(*tag_info);
 		current_ptr = snapshot + snapshot_size;
 	}
 
@@ -686,6 +697,9 @@ static int init_oa_rcs_buffer(struct perf_event *event)
 	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_PID)
 		node_size += sizeof(struct drm_i915_oa_node_pid);
 
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_TAG)
+		node_size += sizeof(struct drm_i915_oa_node_tag);
+
 	/* node size has to be aligned to 64 bytes, since only 64 byte aligned
 	 * addresses can be given to OA unit for dumping OA reports */
 	node_size = ALIGN(node_size, 64);
@@ -841,6 +855,9 @@ static int i915_oa_event_init(struct perf_event *event)
 		if (oa_attr.sample_pid)
 			dev_priv->oa_pmu.sample_info_flags |=
 					I915_OA_SAMPLE_PID;
+		if (oa_attr.sample_tag)
+			dev_priv->oa_pmu.sample_info_flags |=
+					I915_OA_SAMPLE_TAG;
 	}
 
 	report_format = oa_attr.format;

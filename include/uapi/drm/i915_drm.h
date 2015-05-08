@@ -94,7 +94,8 @@ typedef struct _drm_i915_oa_attr {
 	__u64 single_context : 1,
 		multiple_context_mode:1,
 		sample_pid:1,
-		__reserved_1:61;
+		sample_tag:1,
+		__reserved_1:60;
 } drm_i915_oa_attr_t;
 
 /* Header for PERF_RECORD_DEVICE type events */
@@ -131,6 +132,11 @@ struct drm_i915_oa_node_ctx_id {
 
 struct drm_i915_oa_node_pid {
 	__u32 pid;
+	__u32 pad;
+};
+
+struct drm_i915_oa_node_tag {
+	__u32 tag;
 	__u32 pad;
 };
 
@@ -843,6 +849,11 @@ struct drm_i915_gem_execbuffer2 {
 	(eb2).rsvd1 = context & I915_EXEC_CONTEXT_ID_MASK
 #define i915_execbuffer2_get_context_id(eb2) \
 	((eb2).rsvd1 & I915_EXEC_CONTEXT_ID_MASK)
+
+/* upper 32 bits of rsvd1 field contain tag */
+#define I915_EXEC_TAG_MASK		(0xffffffff00000000UL)
+#define i915_execbuffer2_get_tag(eb2) \
+	((eb2).rsvd1 & I915_EXEC_TAG_MASK)
 
 struct drm_i915_gem_pin {
 	/** Handle of the buffer to be pinned. */
