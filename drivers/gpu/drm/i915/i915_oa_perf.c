@@ -12,6 +12,7 @@
 #define PERIOD max_t(u64, 10000, NSEC_PER_SEC / FREQUENCY)
 
 #define TS_DATA_SIZE sizeof(struct drm_i915_ts_data)
+#define MMIO_DATA_SIZE sizeof(struct drm_i915_mmio_data)
 #define CTX_INFO_SIZE sizeof(struct drm_i915_ts_node_ctx_id)
 #define RING_INFO_SIZE sizeof(struct drm_i915_ts_node_ring_id)
 #define PID_INFO_SIZE sizeof(struct drm_i915_ts_node_pid)
@@ -129,8 +130,8 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
 	struct drm_i915_gem_object *obj = dev_priv->gen_pmu.buffer.obj;
 	struct i915_gen_pmu_node *entry;
-	u32 addr = 0;
-	int ret;
+	u32 mmio_addr, addr = 0;
+	int ret, i, count = 0;
 
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (entry == NULL) {
@@ -138,7 +139,12 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 		return;
 	}
 
-	ret = intel_ring_begin(ring, 6);
+	for (count = 0; count < I915_PMU_MMIO_NUM; count++) {
+		if (0 == dev_priv->gen_pmu.mmio_list[count])
+			break;
+	}
+
+	ret = intel_ring_begin(ring, 6 + 4*count);
 	if (ret) {
 		kfree(entry);
 		return;
@@ -173,6 +179,7 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	spin_unlock(&dev_priv->gen_pmu.lock);
 
 	addr = dev_priv->gen_pmu.buffer.gtt_offset + entry->offset;
+	mmio_addr = addr + TS_DATA_SIZE;
 
 	if (ring->id == RCS) {
 		intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(5));
@@ -192,6 +199,32 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 		intel_ring_emit(ring, MI_NOOP);
 		intel_ring_emit(ring, MI_NOOP);
 	}
+
+	/*
+	 * Note:
+	 * 1) The optimization to store the register array with a single
+	 * command doesn't seem to be working with SRM commands. Hence, have a
+	 * loop with a single SRM command repeated. Missing anything here?
+	 * 2) This fn is presently called before and after batch buffer. As
+	 * such, there should already be the CS stall commands called after BB.
+	 * Is there a need/necessity for a command barrier to be inserted in
+	 * ring here? If so, which commands? (CS Stall?)
+	 */
+	for (i = 0; i < 8; i++) {
+		if (0 == dev_priv->gen_pmu.mmio_list[i])
+			break;
+
+		addr = mmio_addr +
+			i * sizeof(dev_priv->gen_pmu.mmio_list[i]);
+
+		intel_ring_emit(ring,
+				MI_STORE_REGISTER_MEM(1) |
+				MI_SRM_LRM_GLOBAL_GTT);
+		intel_ring_emit(ring, dev_priv->gen_pmu.mmio_list[i]);
+		intel_ring_emit(ring, addr);
+		intel_ring_emit(ring, MI_NOOP);
+	}
+
 	intel_ring_advance(ring);
 
 	obj->base.write_domain = I915_GEM_DOMAIN_RENDER;
@@ -553,7 +586,7 @@ static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 {
 	struct perf_sample_data data;
 	struct perf_event *event = dev_priv->gen_pmu.exclusive_event;
-	int snapshot_size;
+	int snapshot_size, mmio_size;
 	u8 *snapshot, *current_ptr;
 	struct drm_i915_ts_node_ctx_id *ctx_info;
 	struct drm_i915_ts_node_ring_id *ring_info;
@@ -565,10 +598,16 @@ static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 			(RING_INFO_SIZE != 8) || (PID_INFO_SIZE != 8) ||
 			(TAG_INFO_SIZE != 8));
 
-	snapshot = dev_priv->gen_pmu.buffer.addr + node->offset;
-	snapshot_size = TS_DATA_SIZE + CTX_INFO_SIZE;
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_MMIO)
+		mmio_size = MMIO_DATA_SIZE;
+	else
+		mmio_size = 0;
 
-	ctx_info = (struct drm_i915_ts_node_ctx_id *)(snapshot + TS_DATA_SIZE);
+	snapshot = dev_priv->gen_pmu.buffer.addr + node->offset;
+	snapshot_size = TS_DATA_SIZE + mmio_size + CTX_INFO_SIZE;
+
+	ctx_info = (struct drm_i915_ts_node_ctx_id *)
+				(snapshot + mmio_size +	TS_DATA_SIZE);
 	ctx_info->ctx_id = node->ctx_id;
 	current_ptr = snapshot + snapshot_size;
 
@@ -1045,6 +1084,9 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 
 	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_TAG)
 		node_size += TAG_INFO_SIZE;
+
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_MMIO)
+		node_size += MMIO_DATA_SIZE;
 
 	/* size has to be aligned to 8 bytes */
 	node_size = ALIGN(node_size, 8);
@@ -1641,6 +1683,40 @@ err_size:
 	goto out;
 }
 
+
+static int check_mmio_whitelist(struct drm_i915_private *dev_priv,
+				struct drm_i915_gen_pmu_attr *gen_attr)
+{
+
+#define GEN_RANGE(l, h) GENMASK(h, l)
+	static const struct register_whitelist {
+		uint64_t offset;
+		uint32_t size;
+		/* supported gens, 0x10 for 4, 0x30 for 4 and 5, etc. */
+		uint32_t gen_bitmask;
+	} whitelist[] = {
+		{ GEN6_GT_GFX_RC6, 4, GEN_RANGE(7, 9) },
+		{ GEN6_GT_GFX_RC6p, 4, GEN_RANGE(7, 9) },
+	};
+	int i, count;
+
+	for (count = 0; count < I915_PMU_MMIO_NUM; count++) {
+		if (!gen_attr->mmio_list[count])
+			break;
+
+		for (i = 0; i < ARRAY_SIZE(whitelist); i++) {
+			if (whitelist[i].offset == gen_attr->mmio_list[count] &&
+			    (1 << INTEL_INFO(dev_priv)->gen &
+					whitelist[i].gen_bitmask))
+				break;
+		}
+
+		if (i == ARRAY_SIZE(whitelist))
+			return -EINVAL;
+	}
+	return 0;
+}
+
 static int i915_gen_event_init(struct perf_event *event)
 {
 	struct drm_i915_private *dev_priv =
@@ -1669,6 +1745,17 @@ static int i915_gen_event_init(struct perf_event *event)
 
 	if (gen_attr.sample_tag)
 		dev_priv->gen_pmu.sample_info_flags |= I915_GEN_PMU_SAMPLE_TAG;
+
+	if (gen_attr.sample_mmio) {
+		ret = check_mmio_whitelist(dev_priv, &gen_attr);
+		if (ret)
+			return ret;
+
+		dev_priv->gen_pmu.sample_info_flags |=
+				I915_GEN_PMU_SAMPLE_MMIO;
+		memcpy(dev_priv->gen_pmu.mmio_list, gen_attr.mmio_list,
+				sizeof(dev_priv->gen_pmu.mmio_list));
+	}
 
 	/* To avoid the complexity of having to accurately filter
 	 * data and marshal to the appropriate client

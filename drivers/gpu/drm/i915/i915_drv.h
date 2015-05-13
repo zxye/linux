@@ -1980,7 +1980,9 @@ struct drm_i915_private {
 #define I915_GEN_PMU_SAMPLE_RING		(1<<0)
 #define I915_GEN_PMU_SAMPLE_PID			(1<<1)
 #define I915_GEN_PMU_SAMPLE_TAG			(1<<2)
+#define I915_GEN_PMU_SAMPLE_MMIO		(1<<3)
 		int sample_info_flags;
+		u32 mmio_list[I915_PMU_MMIO_NUM];
 	} gen_pmu;
 
 	void (*emit_profiling_data[I915_PROFILE_MAX])
