@@ -1885,6 +1885,7 @@ struct i915_perf_cs_data_node {
 	u32 start_offset;
 	u32 oa_offset;
 	u32 ts_offset;
+	u32 mmio_offset;
 
 	/* buffer size corresponding to this entry */
 	u32 size;
@@ -2229,6 +2230,9 @@ struct drm_i915_private {
 		struct i915_perf_stream *ring_stream[I915_NUM_ENGINES];
 		wait_queue_head_t poll_wq[I915_NUM_ENGINES];
 		atomic_t pollin[I915_NUM_ENGINES];
+
+		u32 num_mmio;
+		u32 mmio_list[I915_PERF_MMIO_NUM_MAX];
 
 		struct {
 			u32 specific_ctx_id;
