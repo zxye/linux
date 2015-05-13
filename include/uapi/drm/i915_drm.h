@@ -1206,6 +1206,12 @@ enum drm_i915_perf_oa_event_source {
 	I915_PERF_OA_EVENT_SOURCE_MAX	/* non-ABI */
 };
 
+#define I915_PERF_MMIO_NUM_MAX	8
+struct drm_i915_perf_mmio_list {
+	__u32 num_mmio;
+	__u32 mmio_list[I915_PERF_MMIO_NUM_MAX];
+};
+
 enum drm_i915_perf_property_id {
 	/**
 	 * Open the stream for a specific context handle (as used with
@@ -1278,6 +1284,13 @@ enum drm_i915_perf_property_id {
 	 */
 	DRM_I915_PERF_PROP_SAMPLE_TS,
 
+	/**
+	 * This property requests inclusion of mmio register values in the perf
+	 * sample data. The value of this property specifies the address of user
+	 * struct having the register addresses.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_MMIO,
+
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
 
@@ -1332,6 +1345,7 @@ enum drm_i915_perf_record_type {
 	 *     { u32 pid; } && DRM_I915_PERF_PROP_SAMPLE_PID
 	 *     { u32 tag; } && DRM_I915_PERF_PROP_SAMPLE_TAG
 	 *     { u64 timestamp; } && DRM_I915_PERF_PROP_SAMPLE_TS
+	 *     { u32 mmio[]; } && DRM_I915_PERF_PROP_SAMPLE_MMIO
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
