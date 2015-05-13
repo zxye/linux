@@ -2194,6 +2194,14 @@ struct i915_perf_cs_sample {
 	u32 ts_offset;
 
 	/**
+	 * @mmio_offset: Offset into ``&drm_i915_private->
+	 * perf.command_stream_buf`` where the mmio reg values for this perf
+	 * sample will be collected (if the stream is configured for collection
+	 * of mmio data)
+	 */
+	u32 mmio_offset;
+
+	/**
 	 * @size: buffer size corresponding to this perf sample
 	 */
 	u32 size;
@@ -2575,6 +2583,9 @@ struct drm_i915_private {
 		struct i915_perf_stream *engine_stream[I915_NUM_ENGINES];
 		wait_queue_head_t poll_wq[I915_NUM_ENGINES];
 		bool pollin[I915_NUM_ENGINES];
+
+		u32 num_mmio;
+		u32 mmio_list[I915_PERF_MMIO_NUM_MAX];
 
 		struct {
 			u32 specific_ctx_id;
