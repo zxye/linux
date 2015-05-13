@@ -52,7 +52,7 @@ static u32 i915_perf_event_paranoid = true;
 #define GEN8_OAREPORT_REASON_GO_TRANSITION  (1<<23)
 #define GEN9_OAREPORT_REASON_CLK_RATIO      (1<<24)
 
-#define I915_PERF_GEN_NODE_SIZE 8
+#define I915_PERF_GEN_NODE_SIZE (8 + (4*I915_GEN_PERF_MMIO_NUM))
 
 /* Returns the ring's ID mask (i.e. I915_EXEC_<ring>) */
 #define RING_ID_MASK(ring) ((ring)->id + 1)
@@ -297,8 +297,8 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	struct intel_ringbuffer *ringbuf = req->ringbuf;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
 	struct i915_gen_data_node *entry;
-	u32 addr = 0;
-	int ret;
+	u32 mmio_addr, addr = 0;
+	int ret, i, count = 0;
 
 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
 	if (entry == NULL) {
@@ -306,10 +306,15 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 		return;
 	}
 
+	for (count = 0; count < I915_GEN_PERF_MMIO_NUM; count++) {
+		if (0 == dev_priv->perf.gen.mmio_list[count])
+			break;
+	}
+
 	if (i915.enable_execlists)
-		ret = intel_logical_ring_begin(ringbuf, ctx, 6);
+		ret = intel_logical_ring_begin(ringbuf, ctx, 6 + 4*count);
 	else
-		ret = intel_ring_begin(ring, 6);
+		ret = intel_ring_begin(ring, 6 + 4*count);
 
 	if (ret) {
 		kfree(entry);
@@ -343,6 +348,7 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	spin_unlock(&dev_priv->perf.gen.node_list_lock);
 
 	addr = dev_priv->perf.gen.buffer.vma->node.start + entry->offset;
+	mmio_addr = addr + 8;
 
 	if (i915.enable_execlists) {
 		if (ring->id == RCS) {
@@ -370,6 +376,24 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 			intel_logical_ring_emit(ringbuf, 0);
 			intel_logical_ring_emit(ringbuf, 0);
 			intel_logical_ring_emit(ringbuf, MI_NOOP);
+		}
+		for (i = 0; i < I915_GEN_PERF_MMIO_NUM; i++) {
+			uint32_t cmd;
+
+			if (0 == dev_priv->perf.gen.mmio_list[i])
+				break;
+
+			addr = mmio_addr +
+				i * sizeof(dev_priv->perf.gen.mmio_list[i]);
+
+			cmd = MI_STORE_REGISTER_MEM_GEN8(1) |
+						MI_SRM_LRM_GLOBAL_GTT;
+
+			intel_logical_ring_emit(ringbuf, cmd);
+			intel_logical_ring_emit(ringbuf,
+					dev_priv->perf.gen.mmio_list[i]);
+			intel_logical_ring_emit(ringbuf, addr);
+			intel_logical_ring_emit(ringbuf, 0);
 		}
 		intel_logical_ring_advance(ringbuf);
 	} else {
@@ -411,6 +435,30 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 				intel_ring_emit(ring, MI_NOOP);
 			}
 			intel_ring_emit(ring, MI_NOOP);
+		}
+		for (i = 0; i < I915_GEN_PERF_MMIO_NUM; i++) {
+			uint32_t cmd;
+
+			if (0 == dev_priv->perf.gen.mmio_list[i])
+				break;
+
+			addr = mmio_addr +
+				i * sizeof(dev_priv->perf.gen.mmio_list[i]);
+
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				cmd = MI_STORE_REGISTER_MEM_GEN8(1) |
+					MI_SRM_LRM_GLOBAL_GTT;
+			else
+				cmd = MI_STORE_REGISTER_MEM(1) |
+					MI_SRM_LRM_GLOBAL_GTT;
+
+			intel_ring_emit(ring, cmd);
+			intel_ring_emit(ring, dev_priv->perf.gen.mmio_list[i]);
+			intel_ring_emit(ring, addr);
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				intel_ring_emit(ring, 0);
+			else
+				intel_ring_emit(ring, MI_NOOP);
 		}
 		intel_ring_advance(ring);
 	}
@@ -1583,7 +1631,8 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 	}
 
 	if ((param->sample_flags & I915_PERF_SAMPLE_TIMESTAMP) ||
-		(param->sample_flags & I915_PERF_SAMPLE_RING_ID)) {
+		(param->sample_flags & I915_PERF_SAMPLE_RING_ID) ||
+		(param->sample_flags & I915_PERF_SAMPLE_MMIO)) {
 		DRM_ERROR("Unsupported sample type for OA event\n");
 		return -EINVAL;
 	}
@@ -1740,6 +1789,9 @@ static bool append_gen_sample(struct i915_perf_event *event,
 	if (sample_flags & I915_PERF_SAMPLE_TIMESTAMP)
 		header.size += 8;
 
+	if (sample_flags & I915_PERF_SAMPLE_MMIO)
+		header.size += 4*I915_GEN_PERF_MMIO_NUM;
+
 	if ((read_state->count - read_state->read) < header.size)
 		return false;
 
@@ -1776,6 +1828,15 @@ static bool append_gen_sample(struct i915_perf_event *event,
 		if (copy_to_user(read_state->buf, ts, 8))
 			return false;
 		read_state->buf += 8;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_MMIO) {
+		u8 *mmio_data = ts + 8;
+
+		if (copy_to_user(read_state->buf, mmio_data,
+					4*I915_GEN_PERF_MMIO_NUM))
+			return false;
+		read_state->buf += 4*I915_GEN_PERF_MMIO_NUM;
 	}
 
 	read_state->read += header.size;
@@ -1903,10 +1964,46 @@ static enum hrtimer_restart gen_poll_check_timer_cb(struct hrtimer *hrtimer)
 	return HRTIMER_RESTART;
 }
 
+#define GEN_RANGE(l, h) GENMASK(h, l)
+
+static const struct register_whitelist {
+	uint64_t offset;
+	uint32_t size;
+	/* supported gens, 0x10 for 4, 0x30 for 4 and 5, etc. */
+	uint32_t gen_bitmask;
+} whitelist[] = {
+	{ GEN6_GT_GFX_RC6, 4, GEN_RANGE(7, 9) },
+	{ GEN6_GT_GFX_RC6p, 4, GEN_RANGE(7, 9) },
+};
+
+static int check_mmio_whitelist(struct drm_i915_private *dev_priv,
+				struct drm_i915_perf_gen_attr *gen_attr)
+{
+	struct register_whitelist const *entry = whitelist;
+	int i, count;
+
+	for (count = 0; count < I915_GEN_PERF_MMIO_NUM; count++) {
+		if (!gen_attr->mmio_list[count])
+			break;
+
+		for (i = 0; i < ARRAY_SIZE(whitelist); i++, entry++) {
+			if (entry->offset == gen_attr->mmio_list[count] &&
+			    (1 << INTEL_INFO(dev_priv->dev)->gen &
+					entry->gen_bitmask))
+				break;
+		}
+
+		if (i == ARRAY_SIZE(whitelist))
+			return -EINVAL;
+	}
+	return 0;
+}
+
 static int i915_gen_event_init(struct i915_perf_event *event,
 			      struct drm_i915_perf_open_param *param)
 {
 	struct drm_i915_private *dev_priv = event->dev_priv;
+	struct drm_i915_perf_gen_attr gen_attr;
 	int ret;
 
 	BUG_ON(param->type != I915_PERF_GEN_EVENT);
@@ -1933,6 +2030,22 @@ static int i915_gen_event_init(struct i915_perf_event *event,
 	if (i915_perf_event_paranoid && !capable(CAP_SYS_ADMIN)) {
 		DRM_ERROR("Insufficient privileges to open perf event\n");
 		return -EACCES;
+	}
+
+	ret = i915_perf_copy_attr(to_user_ptr(param->attr),
+					      &gen_attr,
+					      I915_GEN_ATTR_SIZE_VER0,
+					      sizeof(gen_attr));
+	if (ret)
+		return ret;
+
+	if (param->sample_flags & I915_PERF_SAMPLE_MMIO) {
+		ret = check_mmio_whitelist(dev_priv, &gen_attr);
+		if (ret)
+			return ret;
+
+		memcpy(dev_priv->perf.gen.mmio_list, gen_attr.mmio_list,
+				sizeof(dev_priv->perf.gen.mmio_list));
 	}
 
 	spin_lock_init(&dev_priv->perf.gen.node_list_lock);
@@ -2355,7 +2468,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 			     I915_PERF_SAMPLE_PID |
 			     I915_PERF_SAMPLE_TAG |
 			     I915_PERF_SAMPLE_TIMESTAMP |
-			     I915_PERF_SAMPLE_RING_ID;
+			     I915_PERF_SAMPLE_RING_ID |
+			     I915_PERF_SAMPLE_MMIO;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;

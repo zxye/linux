@@ -1214,7 +1214,14 @@ struct drm_i915_perf_oa_attr {
  */
 #define I915_OA_ATTR_SIZE_VER0		20 /* sizeof first published struct */
 
+#define I915_GEN_PERF_MMIO_NUM		8
 
+struct drm_i915_perf_gen_attr {
+	__u32 size;
+
+	__u32 mmio_list[I915_GEN_PERF_MMIO_NUM];
+};
+#define I915_GEN_ATTR_SIZE_VER0		36 /* sizeof first published struct */
 
 #define I915_PERF_FLAG_FD_CLOEXEC	(1<<0)
 #define I915_PERF_FLAG_FD_NONBLOCK	(1<<1)
@@ -1228,6 +1235,7 @@ struct drm_i915_perf_oa_attr {
 #define I915_PERF_SAMPLE_TAG		(1<<4)
 #define I915_PERF_SAMPLE_TIMESTAMP	(1<<5)
 #define I915_PERF_SAMPLE_RING_ID	(1<<6)
+#define I915_PERF_SAMPLE_MMIO		(1<<7)
 
 struct drm_i915_perf_open_param {
 	/* Such as I915_PERF_OA_EVENT */
@@ -1271,6 +1279,7 @@ enum drm_i915_perf_record_type {
 	 *     { u32 tag; }	    && I915_PERF_SAMPLE_TAG
 	 *     { u32 ring_id; }	    && I915_PERF_SAMPLE_RING_ID
 	 *     { u64 timestamp; }   && I915_PERF_SAMPLE_TIMESTAMP
+	 *     { u32 mmio[]; }      && I915_PERF_SAMPLE_MMIO
 	 *     { u32 oa_report[]; } && I915_PERF_SAMPLE_OA_REPORT
 	 *
 	 * };

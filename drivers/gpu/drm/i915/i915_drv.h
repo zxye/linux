@@ -2054,6 +2054,8 @@ struct drm_i915_private {
 			struct hrtimer poll_check_timer;
 			wait_queue_head_t poll_wq;
 
+			u32 mmio_list[I915_GEN_PERF_MMIO_NUM];
+
 			struct {
 				struct drm_i915_gem_object *obj;
 				struct i915_vma *vma;
