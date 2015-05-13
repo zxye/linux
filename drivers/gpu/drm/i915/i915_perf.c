@@ -72,6 +72,7 @@ struct sample_data {
 	u64 gpu_ts;
 	u64 clk_mono;
 	const u8 *report;
+	const u8 *mmio;
 };
 
 /* for sysctl proc_dointvec_minmax of i915_oa_min_timer_exponent */
@@ -116,6 +117,7 @@ static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
 #define SAMPLE_TAG		(1<<4)
 #define SAMPLE_TS		(1<<5)
 #define SAMPLE_CLK_MONO		(1<<6)
+#define SAMPLE_MMIO		(1<<7)
 
 struct perf_open_properties {
 	u32 sample_flags;
@@ -216,6 +218,9 @@ static int insert_perf_entry(struct drm_i915_private *dev_priv,
 		sample_ts = true;
 	}
 
+	if (sample_flags & SAMPLE_MMIO)
+		entry_size += 4*dev_priv->perf.num_mmio;
+
 	spin_lock(&dev_priv->perf.node_list_lock[id]);
 	if (list_empty(&dev_priv->perf.node_list[id])) {
 		offset = 0;
@@ -292,6 +297,10 @@ out:
 		/* Ensure 8 byte alignment of ts_offset */
 		entry->ts_offset = ALIGN(entry->ts_offset, TS_ADDR_ALIGN);
 		offset = entry->ts_offset + I915_PERF_TS_SAMPLE_SIZE;
+	}
+	if (sample_flags & SAMPLE_MMIO) {
+		entry->mmio_offset = offset;
+		offset = entry->mmio_offset + 4*dev_priv->perf.num_mmio;
 	}
 
 	list_add_tail(&entry->link, &dev_priv->perf.node_list[id]);
@@ -445,6 +454,72 @@ static int i915_ring_stream_capture_ts(struct drm_i915_gem_request *req,
 	return 0;
 }
 
+static int i915_ring_stream_capture_mmio(struct drm_i915_gem_request *req,
+						u32 offset)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct intel_ringbuffer *ringbuf = req->ringbuf;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	int num_mmio = dev_priv->perf.num_mmio;
+	u32 mmio_addr, addr = 0;
+	int ret, i;
+
+	if (i915.enable_execlists)
+		ret = intel_logical_ring_begin(req, 4*num_mmio);
+	else
+		ret = intel_ring_begin(req, 4*num_mmio);
+
+	if (ret)
+		return ret;
+
+	mmio_addr =
+		dev_priv->perf.command_stream_buf[ring->id].vma->node.start +
+			offset;
+
+	if (i915.enable_execlists) {
+		for (i = 0; i < num_mmio; i++) {
+			uint32_t cmd;
+
+			addr = mmio_addr +
+				i * sizeof(dev_priv->perf.mmio_list[i]);
+
+			cmd = MI_STORE_REGISTER_MEM_GEN8 |
+						MI_SRM_LRM_GLOBAL_GTT;
+
+			intel_logical_ring_emit(ringbuf, cmd);
+			intel_logical_ring_emit(ringbuf,
+					dev_priv->perf.mmio_list[i]);
+			intel_logical_ring_emit(ringbuf, addr);
+			intel_logical_ring_emit(ringbuf, 0);
+		}
+		intel_logical_ring_advance(ringbuf);
+	} else {
+		for (i = 0; i < num_mmio; i++) {
+			uint32_t cmd;
+
+			addr = mmio_addr +
+				i * sizeof(dev_priv->perf.mmio_list[i]);
+
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				cmd = MI_STORE_REGISTER_MEM_GEN8 |
+					MI_SRM_LRM_GLOBAL_GTT;
+			else
+				cmd = MI_STORE_REGISTER_MEM |
+					MI_SRM_LRM_GLOBAL_GTT;
+
+			intel_ring_emit(ring, cmd);
+			intel_ring_emit(ring, dev_priv->perf.mmio_list[i]);
+			intel_ring_emit(ring, addr);
+			if (INTEL_INFO(ring->dev)->gen >= 8)
+				intel_ring_emit(ring, 0);
+			else
+				intel_ring_emit(ring, MI_NOOP);
+		}
+		intel_ring_advance(ring);
+	}
+	return 0;
+}
+
 static void i915_ring_stream_cs_hook(struct i915_perf_stream *stream,
 				struct drm_i915_gem_request *req, u32 tag)
 {
@@ -482,6 +557,13 @@ static void i915_ring_stream_cs_hook(struct i915_perf_stream *stream,
 		 * called already.
 		 */
 		ret = i915_ring_stream_capture_ts(req, entry->ts_offset);
+		if (ret)
+			goto err_unref;
+	}
+
+	if (sample_flags & SAMPLE_MMIO) {
+		ret = i915_ring_stream_capture_mmio(req,
+				entry->mmio_offset);
 		if (ret)
 			goto err_unref;
 	}
@@ -731,6 +813,12 @@ static int append_sample(struct i915_perf_stream *stream,
 		buf += I915_PERF_TS_SAMPLE_SIZE;
 	}
 
+	if (sample_flags & SAMPLE_MMIO) {
+		if (copy_to_user(buf, data->mmio, 4*dev_priv->perf.num_mmio))
+			return -EFAULT;
+		buf += 4*dev_priv->perf.num_mmio;
+	}
+
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(buf, data->report, report_size))
 			return -EFAULT;
@@ -802,6 +890,7 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	u32 sample_flags = stream->sample_flags;
 	struct sample_data data = { 0 };
+	u32 mmio_list_dummy[I915_PERF_MMIO_NUM_MAX] = { 0 };
 
 	if (sample_flags & SAMPLE_OA_SOURCE_INFO) {
 		enum drm_i915_perf_oa_event_source source;
@@ -840,6 +929,10 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 
 		data.clk_mono = get_clk_mono_from_gpu_ts(stream, gpu_ts);
 	}
+
+	/* Periodic OA samples don't have mmio associated with them */
+	if (sample_flags & SAMPLE_MMIO)
+		data.mmio = (u8 *)mmio_list_dummy;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1232,6 +1325,10 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 			data.clk_mono = get_clk_mono_from_gpu_ts(stream,
 								gpu_ts);
 	}
+
+	if (sample_flags & SAMPLE_MMIO)
+		data.mmio = dev_priv->perf.command_stream_buf[id].addr +
+				node->mmio_offset;
 
 	return append_sample(stream, read_state, &data);
 }
@@ -2093,10 +2190,12 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 	bool require_oa_unit = props->sample_flags & (SAMPLE_OA_REPORT |
 						      SAMPLE_OA_SOURCE_INFO);
 	bool require_cs_mode = props->sample_flags & (SAMPLE_PID |
-						      SAMPLE_TAG);
+						      SAMPLE_TAG |
+						      SAMPLE_MMIO);
 	bool cs_sample_data = props->sample_flags & (SAMPLE_OA_REPORT |
 							SAMPLE_TS |
-							SAMPLE_CLK_MONO);
+							SAMPLE_CLK_MONO |
+							SAMPLE_MMIO);
 	int ret;
 
 	if ((props->sample_flags & SAMPLE_CTX_ID) && !props->cs_mode) {
@@ -2248,7 +2347,7 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 
 	if (require_cs_mode && !props->cs_mode) {
 		DRM_ERROR(
-			"PID, TAG or TS sampling require a ring to be specified");
+			"PID, TAG, TS or MMIO sampling require a ring to be specified");
 		ret = -EINVAL;
 		goto cs_error;
 	}
@@ -2294,6 +2393,11 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 		if (props->sample_flags & SAMPLE_TAG) {
 			stream->sample_flags |= SAMPLE_TAG;
 			stream->sample_size += 4;
+		}
+
+		if (props->sample_flags & SAMPLE_MMIO) {
+			stream->sample_flags |= SAMPLE_MMIO;
+			stream->sample_size += 4 * dev_priv->perf.num_mmio;
 		}
 
 		ret = alloc_command_stream_buf(dev_priv, stream->ring_id);
@@ -2825,6 +2929,69 @@ err:
 	return ret;
 }
 
+static int check_mmio_whitelist(struct drm_i915_private *dev_priv, u32 num_mmio)
+{
+#define GEN_RANGE(l, h) GENMASK(h, l)
+	static const struct register_whitelist {
+		i915_reg_t mmio;
+		uint32_t size;
+		/* supported gens, 0x10 for 4, 0x30 for 4 and 5, etc. */
+		uint32_t gen_bitmask;
+	} whitelist[] = {
+		{ GEN6_GT_GFX_RC6, 4, GEN_RANGE(7, 9) },
+		{ GEN6_GT_GFX_RC6p, 4, GEN_RANGE(7, 9) },
+	};
+	int i, count;
+
+	for (count = 0; count < num_mmio; count++) {
+		/* Coarse check on mmio reg addresses being non zero */
+		if (!dev_priv->perf.mmio_list[count])
+			return -EINVAL;
+
+		for (i = 0; i < ARRAY_SIZE(whitelist); i++) {
+			if (( i915_mmio_reg_offset(whitelist[i].mmio) ==
+				dev_priv->perf.mmio_list[count]) &&
+			    (1 << INTEL_INFO(dev_priv->dev)->gen &
+					whitelist[i].gen_bitmask))
+				break;
+		}
+
+		if (i == ARRAY_SIZE(whitelist))
+			return -EINVAL;
+	}
+	return 0;
+}
+
+static int copy_mmio_list(struct drm_i915_private *dev_priv,
+				void __user *mmio)
+{
+	void __user *mmio_list = ((u8 __user *)mmio + 4);
+	u32 num_mmio;
+	int ret;
+
+	if (!mmio)
+		return -EINVAL;
+
+	ret = get_user(num_mmio, (u32 __user *)mmio);
+	if (ret)
+		return ret;
+
+	if (num_mmio > I915_PERF_MMIO_NUM_MAX)
+		return -EINVAL;
+
+	memset(dev_priv->perf.mmio_list, 0, I915_PERF_MMIO_NUM_MAX);
+	if (copy_from_user(dev_priv->perf.mmio_list, mmio_list, 4*num_mmio))
+		return -EINVAL;
+
+	ret = check_mmio_whitelist(dev_priv, num_mmio);
+	if (ret)
+		return ret;
+
+	dev_priv->perf.num_mmio = num_mmio;
+
+	return 0;
+}
+
 /* Note we copy the properties from userspace outside of the i915 perf
  * mutex to avoid an awkward lockdep with mmap_sem.
  *
@@ -2940,6 +3107,12 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 			break;
 		case DRM_I915_PERF_PROP_SAMPLE_CLOCK_MONOTONIC:
 			props->sample_flags |= SAMPLE_CLK_MONO;
+			break;
+		case DRM_I915_PERF_PROP_SAMPLE_MMIO:
+			ret = copy_mmio_list(dev_priv, (u64 __user *)value);
+			if (ret)
+				return ret;
+			props->sample_flags |= SAMPLE_MMIO;
 			break;
 		case DRM_I915_PERF_PROP_MAX:
 			BUG();

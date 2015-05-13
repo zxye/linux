@@ -1866,6 +1866,7 @@ struct i915_perf_cs_data_node {
 	u32 start_offset;
 	u32 oa_offset;
 	u32 ts_offset;
+	u32 mmio_offset;
 
 	/* buffer size corresponding to this entry */
 	u32 size;
@@ -2154,6 +2155,9 @@ struct drm_i915_private {
 		u32 gpu_clk_freq;
 		u32 resync_period; /* in msecs */
 		struct delayed_work clk_sync_work;
+
+		u32 num_mmio;
+		u32 mmio_list[I915_PERF_MMIO_NUM_MAX];
 
 		struct {
 			u32 specific_ctx_id;
