@@ -1585,6 +1585,31 @@ struct i915_oa_reg {
 	u32 addr;
 	u32 value;
 };
+
+extern const struct i915_oa_reg i915_oa_3d_mux_config_hsw[];
+extern const int i915_oa_3d_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[];
+extern const int i915_oa_3d_b_counter_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_compute_mux_config_hsw[];
+extern const int i915_oa_compute_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_compute_b_counter_config_hsw[];
+extern const int i915_oa_compute_b_counter_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_compute_extended_mux_config_hsw[];
+extern const int i915_oa_compute_extended_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_hsw[];
+extern const int i915_oa_compute_extended_b_counter_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_memory_reads_mux_config_hsw[];
+extern const int i915_oa_memory_reads_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_hsw[];
+extern const int i915_oa_memory_reads_b_counter_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_memory_writes_mux_config_hsw[];
+extern const int i915_oa_memory_writes_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_hsw[];
+extern const int i915_oa_memory_writes_b_counter_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[];
+extern const int i915_oa_sampler_balance_mux_config_hsw_len;
+extern const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[];
+extern const int i915_oa_sampler_balance_b_counter_config_hsw_len;
 #endif
 
 struct drm_i915_private {

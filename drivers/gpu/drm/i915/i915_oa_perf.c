@@ -25,137 +25,6 @@ static int hsw_perf_format_sizes[] = {
 	64   /* C4_B8_HSW */
 };
 
-
-/* A generated mux config to select counters useful for profiling 3D
- * workloads */
-static struct i915_oa_reg hsw_profile_3d_mux_config[] = {
-
-	{ 0x253A4, 0x01600000 },
-	{ 0x25440, 0x00100000 },
-	{ 0x25128, 0x00000000 },
-	{ 0x2691C, 0x00000800 },
-	{ 0x26AA0, 0x01500000 },
-	{ 0x26B9C, 0x00006000 },
-	{ 0x2791C, 0x00000800 },
-	{ 0x27AA0, 0x01500000 },
-	{ 0x27B9C, 0x00006000 },
-	{ 0x2641C, 0x00000400 },
-	{ 0x25380, 0x00000010 },
-	{ 0x2538C, 0x00000000 },
-	{ 0x25384, 0x0800AAAA },
-	{ 0x25400, 0x00000004 },
-	{ 0x2540C, 0x06029000 },
-	{ 0x25410, 0x00000002 },
-	{ 0x25404, 0x5C30FFFF },
-	{ 0x25100, 0x00000016 },
-	{ 0x25110, 0x00000400 },
-	{ 0x25104, 0x00000000 },
-	{ 0x26804, 0x00001211 },
-	{ 0x26884, 0x00000100 },
-	{ 0x26900, 0x00000002 },
-	{ 0x26908, 0x00700000 },
-	{ 0x26904, 0x00000000 },
-	{ 0x26984, 0x00001022 },
-	{ 0x26A04, 0x00000011 },
-	{ 0x26A80, 0x00000006 },
-	{ 0x26A88, 0x00000C02 },
-	{ 0x26A84, 0x00000000 },
-	{ 0x26B04, 0x00001000 },
-	{ 0x26B80, 0x00000002 },
-	{ 0x26B8C, 0x00000007 },
-	{ 0x26B84, 0x00000000 },
-	{ 0x27804, 0x00004844 },
-	{ 0x27884, 0x00000400 },
-	{ 0x27900, 0x00000002 },
-	{ 0x27908, 0x0E000000 },
-	{ 0x27904, 0x00000000 },
-	{ 0x27984, 0x00004088 },
-	{ 0x27A04, 0x00000044 },
-	{ 0x27A80, 0x00000006 },
-	{ 0x27A88, 0x00018040 },
-	{ 0x27A84, 0x00000000 },
-	{ 0x27B04, 0x00004000 },
-	{ 0x27B80, 0x00000002 },
-	{ 0x27B8C, 0x000000E0 },
-	{ 0x27B84, 0x00000000 },
-	{ 0x26104, 0x00002222 },
-	{ 0x26184, 0x0C006666 },
-	{ 0x26284, 0x04000000 },
-	{ 0x26304, 0x04000000 },
-	{ 0x26400, 0x00000002 },
-	{ 0x26410, 0x000000A0 },
-	{ 0x26404, 0x00000000 },
-	{ 0x25420, 0x04108020 },
-	{ 0x25424, 0x1284A420 },
-	{ 0x2541C, 0x00000000 },
-	{ 0x25428, 0x00042049 },
-};
-
-/* A corresponding B counter configuration for profiling 3D workloads */
-static struct i915_oa_reg hsw_profile_3d_b_counter_config[] = {
-	{ 0x2724, 0x00800000 },
-	{ 0x2720, 0x00000000 },
-	{ 0x2714, 0x00800000 },
-	{ 0x2710, 0x00000000 },
-};
-
-/* mux config for compute basic */
-static struct i915_oa_reg hsw_profile_compute_mux_config[] = {
-
-	{ 0x253A4, 0x00000000 },
-	{ 0x2681C, 0x01F00800 },
-	{ 0x26820, 0x00001000 },
-	{ 0x2781C, 0x01F00800 },
-	{ 0x26520, 0x00000007 },
-	{ 0x265A0, 0x00000007 },
-	{ 0x25380, 0x00000010 },
-	{ 0x2538C, 0x00300000 },
-	{ 0x25384, 0xAA8AAAAA },
-	{ 0x25404, 0xFFFFFFFF },
-	{ 0x26800, 0x00004202 },
-	{ 0x26808, 0x00605817 },
-	{ 0x2680C, 0x10001005 },
-	{ 0x26804, 0x00000000 },
-	{ 0x27800, 0x00000102 },
-	{ 0x27808, 0x0C0701E0 },
-	{ 0x2780C, 0x000200A0 },
-	{ 0x27804, 0x00000000 },
-	{ 0x26484, 0x44000000 },
-	{ 0x26704, 0x44000000 },
-	{ 0x26500, 0x00000006 },
-	{ 0x26510, 0x00000001 },
-	{ 0x26504, 0x88000000 },
-	{ 0x26580, 0x00000006 },
-	{ 0x26590, 0x00000020 },
-	{ 0x26584, 0x00000000 },
-	{ 0x26104, 0x55822222 },
-	{ 0x26184, 0xAA866666 },
-	{ 0x25420, 0x08320C83 },
-	{ 0x25424, 0x06820C83 },
-	{ 0x2541C, 0x00000000 },
-	{ 0x25428, 0x00000C03 },
-};
-
-static struct i915_oa_reg hsw_profile_compute_b_counter_config[] = {
-
-	{ 0x2710, 0x00000000 },
-	{ 0x2714, 0x00800000 },
-	{ 0x2718, 0xAAAAAAAA },
-	{ 0x271C, 0xAAAAAAAA },
-	{ 0x2720, 0x00000000 },
-	{ 0x2724, 0x00800000 },
-	{ 0x2728, 0xAAAAAAAA },
-	{ 0x272C, 0xAAAAAAAA },
-	{ 0x2740, 0x00000000 },
-	{ 0x2744, 0x00000000 },
-	{ 0x2748, 0x00000000 },
-	{ 0x274C, 0x00000000 },
-	{ 0x2750, 0x00000000 },
-	{ 0x2754, 0x00000000 },
-	{ 0x2758, 0x00000000 },
-	{ 0x275C, 0x00000000 },
-};
-
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
 					     struct perf_event *event)
@@ -386,7 +255,6 @@ static int init_oa_buffer(struct perf_event *event)
 	int ret;
 
 	BUG_ON(!IS_HASWELL(dev_priv->dev));
-	BUG_ON(mutex_is_locked(&dev_priv->dev->struct_mutex));
 	BUG_ON(dev_priv->oa_pmu.oa_buffer.obj);
 
 	ret = i915_mutex_lock_interruptible(dev_priv->dev);
@@ -750,13 +618,13 @@ static void update_oacontrol(struct drm_i915_private *dev_priv)
 }
 
 static void config_oa_regs(struct drm_i915_private *dev_priv,
-			   struct i915_oa_reg *regs,
+			   const struct i915_oa_reg *regs,
 			   int n_regs)
 {
 	int i;
 
 	for (i = 0; i < n_regs; i++) {
-		struct i915_oa_reg *reg = regs + i;
+		const struct i915_oa_reg *reg = regs + i;
 
 		I915_WRITE(reg->addr, reg->value);
 	}
@@ -770,15 +638,35 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 	u32 oastatus1, tail;
 
 	if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_3D) {
-		config_oa_regs(dev_priv, hsw_profile_3d_mux_config,
-			       ARRAY_SIZE(hsw_profile_3d_mux_config));
-		config_oa_regs(dev_priv, hsw_profile_3d_b_counter_config,
-			       ARRAY_SIZE(hsw_profile_3d_b_counter_config));
+		config_oa_regs(dev_priv, i915_oa_3d_mux_config_hsw,
+				i915_oa_3d_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_3d_b_counter_config_hsw,
+				i915_oa_3d_b_counter_config_hsw_len);
 	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE) {
-                config_oa_regs(dev_priv, hsw_profile_compute_mux_config,
-                               ARRAY_SIZE(hsw_profile_compute_mux_config));
-                config_oa_regs(dev_priv, hsw_profile_compute_b_counter_config,
-                               ARRAY_SIZE(hsw_profile_compute_b_counter_config));
+		config_oa_regs(dev_priv, i915_oa_compute_mux_config_hsw,
+				i915_oa_compute_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_compute_b_counter_config_hsw,
+				i915_oa_compute_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE_EXTENDED) {
+		config_oa_regs(dev_priv, i915_oa_compute_extended_mux_config_hsw,
+				i915_oa_compute_extended_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_compute_extended_b_counter_config_hsw,
+				i915_oa_compute_extended_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_READS) {
+		config_oa_regs(dev_priv, i915_oa_memory_reads_mux_config_hsw,
+				i915_oa_memory_reads_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_memory_reads_b_counter_config_hsw,
+				i915_oa_memory_reads_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_WRITES) {
+		config_oa_regs(dev_priv, i915_oa_memory_writes_mux_config_hsw,
+				i915_oa_memory_writes_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_memory_writes_b_counter_config_hsw,
+				i915_oa_memory_writes_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_SAMPLER_BALANCE) {
+		config_oa_regs(dev_priv, i915_oa_sampler_balance_mux_config_hsw,
+				i915_oa_sampler_balance_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_sampler_balance_b_counter_config_hsw,
+				i915_oa_sampler_balance_b_counter_config_hsw_len);
 	} else {
 		/* XXX: On Haswell, when threshold disable mode is desired,
 		 * instead of setting the threshold enable to '0', we need to
