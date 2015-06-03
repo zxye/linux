@@ -1595,6 +1595,11 @@ enum i915_oa_event_state {
 	I915_OA_EVENT_STOPPED,
 };
 
+enum i915_profile_mode {
+	I915_PROFILE_OA = 0,
+	I915_PROFILE_MAX,
+};
+
 struct i915_oa_ops {
        void (*init_oa_buffer)(struct perf_event *event);
        void (*configure_metric_set)(struct perf_event *event);
@@ -1948,6 +1953,9 @@ struct drm_i915_private {
 		struct work_struct work_timer;
 		struct work_struct work_event_destroy;
 	} oa_pmu;
+
+	void (*insert_profile_cmd[I915_PROFILE_MAX])
+		(struct intel_ringbuffer *ringbuf, u32 ctx_id);
 #endif
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
@@ -3130,6 +3138,7 @@ void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 				  struct intel_context *context);
 void i915_oa_context_switch_notify(struct drm_i915_private *dev_priv,
 				   struct intel_engine_cs *ring);
+void i915_insert_profiling_cmd(struct intel_ringbuffer *ringbuf, u32 ctx_id);
 #else
 static inline void
 i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
@@ -3140,6 +3149,8 @@ i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 static inline void
 i915_oa_context_switch_notify(struct drm_i915_private *dev_priv,
 			      struct intel_engine_cs *ring) {}
+void i915_insert_profiling_cmd(struct intel_ringbuffer *ringbuf,
+				u32 ctx_id) {};
 #endif
 
 /* i915_gem_evict.c */

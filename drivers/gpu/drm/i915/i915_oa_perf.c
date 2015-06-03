@@ -38,6 +38,76 @@ static int bdw_perf_format_sizes[] = {
        64,  /* C4_B8_BDW */
 };
 
+void i915_insert_profiling_cmd(struct intel_ringbuffer *ringbuf, u32 ctx_id)
+{
+	struct intel_engine_cs *ring = ringbuf->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	int i;
+
+	for (i = I915_PROFILE_OA; i < I915_PROFILE_MAX; i++) {
+		if (dev_priv->insert_profile_cmd[i])
+			dev_priv->insert_profile_cmd[i](ringbuf, ctx_id);
+	}
+}
+
+void i915_oa_insert_cmd(struct intel_ringbuffer *ringbuf, u32 ctx_id)
+{
+	struct intel_engine_cs *ring = ringbuf->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct drm_i915_oa_async_node_info *node_info = NULL;
+	struct drm_i915_oa_async_queue_header *queue_hdr =
+			(struct drm_i915_oa_async_queue_header *)
+			dev_priv->oa_pmu.oa_async_buffer.addr;
+	void *data_ptr = (u8 *)queue_hdr + queue_hdr->data_offset;
+	int data_size =	(queue_hdr->size_in_bytes - queue_hdr->data_offset);
+	u32 data_offset, addr = 0;
+	unsigned long lock_flags;
+	int ret;
+
+	struct drm_i915_oa_async_node *nodes = data_ptr;
+	int num_nodes = 0;
+	int index = 0;
+
+	/* OA counters are only supported on the render ring */
+	if (ring->id != RCS)
+		return;
+
+	num_nodes = data_size / sizeof(*nodes);
+
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	index = queue_hdr->node_count % num_nodes;
+	node_info = &nodes[index].node_info;
+	node_info->pid = current->pid;
+	node_info->ctx_id = ctx_id;
+	queue_hdr->node_count++;
+	if (queue_hdr->node_count > num_nodes)
+		queue_hdr->wrap_count++;
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	data_offset = offsetof(struct drm_i915_oa_async_node, report_perf);
+
+	addr = i915_gem_obj_ggtt_offset(dev_priv->oa_pmu.oa_async_buffer.obj) +
+		queue_hdr->data_offset +
+		index * sizeof(struct drm_i915_oa_async_node) +
+		data_offset;
+
+	/* addr should be 64 byte aligned */
+	BUG_ON(addr & 0x3f);
+
+	ret = intel_ring_begin(ring, 4);
+	if (ret)
+		return;
+
+	intel_ring_emit(ring, MI_REPORT_PERF_COUNT | (1<<0));
+	intel_ring_emit(ring, addr | MI_REPORT_PERF_COUNT_GGTT);
+	intel_ring_emit(ring, ring->outstanding_lazy_request->seqno);
+	intel_ring_emit(ring, MI_NOOP);
+	intel_ring_advance(ring);
+
+	i915_gem_request_assign(&node_info->req,
+				ring->outstanding_lazy_request);
+}
+
 static void init_oa_async_buf_queue(struct drm_i915_private *dev_priv)
 {
 	struct drm_i915_oa_async_queue_header *hdr =
@@ -1361,6 +1431,8 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 		dev_priv->oa_pmu.oa_async_buffer.tail = 0;
 		dev_priv->oa_pmu.oa_async_buffer.head = 0;
+		dev_priv->insert_profile_cmd[I915_PROFILE_OA] =
+					i915_oa_insert_cmd;
 		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 	}
 
@@ -1402,6 +1474,7 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 	if (dev_priv->oa_pmu.async_sample_mode) {
 		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 		dev_priv->oa_pmu.event_state = I915_OA_EVENT_STOP_IN_PROGRESS;
+		dev_priv->insert_profile_cmd[I915_PROFILE_OA] = NULL;
 		spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 	} else {
 		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
