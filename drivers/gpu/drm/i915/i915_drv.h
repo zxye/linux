@@ -1594,6 +1594,11 @@ enum i915_oa_event_state {
 	I915_OA_EVENT_STOPPED,
 };
 
+enum i915_profile_mode {
+	I915_PROFILE_OA = 0,
+	I915_PROFILE_MAX,
+};
+
 struct i915_oa_rcs_node {
 	struct list_head head;
 	struct drm_i915_gem_request *req;
@@ -1924,6 +1929,7 @@ struct drm_i915_private {
 		struct {
 			struct drm_i915_gem_object *obj;
 			u32 gtt_offset;
+			struct i915_vma *vma;
 			u8 *addr;
 			int format;
 			int format_size;
@@ -1934,6 +1940,9 @@ struct drm_i915_private {
 		struct work_struct forward_work;
 		struct work_struct event_destroy_work;
 	} oa_pmu;
+
+	void (*emit_profiling_data[I915_PROFILE_MAX])
+		(struct drm_i915_gem_request *req, u32 global_ctx_id);
 #endif
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
@@ -3114,6 +3123,8 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 				struct intel_context *context);
 void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 				  struct intel_context *context);
+void i915_emit_profiling_data(struct drm_i915_gem_request *req,
+				u32 global_ctx_id);
 #else
 static inline void
 i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
@@ -3121,6 +3132,8 @@ i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 static inline void
 i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 			     struct intel_context *context) {}
+void i915_emit_profiling_data(struct drm_i915_gem_request *req,
+				u32 global_ctx_id) {};
 #endif
 
 /* i915_gem_evict.c */

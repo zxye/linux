@@ -1308,6 +1308,8 @@ i915_gem_ringbuffer_submission(struct drm_device *dev, struct drm_file *file,
 			goto error;
 	}
 
+	i915_emit_profiling_data(intel_ring_get_request(ring), ctx->global_id);
+
 	exec_len = args->batch_len;
 	if (cliprects) {
 		for (i = 0; i < args->num_cliprects; i++) {
@@ -1329,6 +1331,8 @@ i915_gem_ringbuffer_submission(struct drm_device *dev, struct drm_file *file,
 		if (ret)
 			return ret;
 	}
+
+	i915_emit_profiling_data(intel_ring_get_request(ring), ctx->global_id);
 
 	trace_i915_gem_ring_dispatch(intel_ring_get_request(ring), dispatch_flags);
 

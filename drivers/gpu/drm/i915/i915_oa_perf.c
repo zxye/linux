@@ -25,6 +25,86 @@ static int hsw_perf_format_sizes[] = {
 	64   /* C4_B8_HSW */
 };
 
+void i915_emit_profiling_data(struct drm_i915_gem_request *req,
+				u32 global_ctx_id)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	int i;
+
+	for (i = I915_PROFILE_OA; i < I915_PROFILE_MAX; i++) {
+		if (dev_priv->emit_profiling_data[i])
+			dev_priv->emit_profiling_data[i](req, global_ctx_id);
+	}
+}
+
+/*
+ * Emits the commands to capture OA perf report, into the Render CS
+ */
+static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
+				u32 global_ctx_id)
+{
+	struct intel_engine_cs *ring = req->ring;
+	struct drm_i915_private *dev_priv = ring->dev->dev_private;
+	struct drm_i915_gem_object *obj = dev_priv->oa_pmu.oa_rcs_buffer.obj;
+	struct i915_oa_rcs_node *entry;
+	unsigned long lock_flags;
+	u32 addr = 0;
+	int ret;
+
+	/* OA counters are only supported on the render ring */
+	if (ring->id != RCS)
+		return;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (entry == NULL) {
+		DRM_ERROR("alloc failed\n");
+		return;
+	}
+
+	ret = intel_ring_begin(ring, 4);
+	if (ret) {
+		kfree(entry);
+		return;
+	}
+
+	entry->ctx_id = global_ctx_id;
+	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
+
+	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
+	if (list_empty(&dev_priv->oa_pmu.node_list))
+		entry->offset = 0;
+	else {
+		struct i915_oa_rcs_node *last_entry;
+		int max_offset = dev_priv->oa_pmu.oa_rcs_buffer.node_count *
+				dev_priv->oa_pmu.oa_rcs_buffer.node_size;
+
+		last_entry = list_last_entry(&dev_priv->oa_pmu.node_list,
+					struct i915_oa_rcs_node, head);
+		entry->offset = last_entry->offset +
+				dev_priv->oa_pmu.oa_rcs_buffer.node_size;
+
+		if (entry->offset > max_offset)
+			entry->offset = 0;
+	}
+	list_add_tail(&entry->head, &dev_priv->oa_pmu.node_list);
+	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
+
+	addr = dev_priv->oa_pmu.oa_rcs_buffer.gtt_offset + entry->offset;
+
+	/* addr should be 64 byte aligned */
+	BUG_ON(addr & 0x3f);
+
+	intel_ring_emit(ring, MI_REPORT_PERF_COUNT | (1<<0));
+	intel_ring_emit(ring, addr | MI_REPORT_PERF_COUNT_GGTT);
+	intel_ring_emit(ring, ring->outstanding_lazy_request->seqno);
+	intel_ring_emit(ring, MI_NOOP);
+	intel_ring_advance(ring);
+
+	obj->base.write_domain = I915_GEM_DOMAIN_RENDER;
+	i915_vma_move_to_active(dev_priv->oa_pmu.oa_rcs_buffer.vma, ring);
+}
+
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
 					     struct perf_event *event)
@@ -324,6 +404,7 @@ oa_rcs_buffer_destroy(struct drm_i915_private *i915)
 	spin_lock(&i915->oa_pmu.lock);
 	i915->oa_pmu.oa_rcs_buffer.obj = NULL;
 	i915->oa_pmu.oa_rcs_buffer.gtt_offset = 0;
+	i915->oa_pmu.oa_rcs_buffer.vma = NULL;
 	i915->oa_pmu.oa_rcs_buffer.addr = NULL;
 	spin_unlock(&i915->oa_pmu.lock);
 }
@@ -584,6 +665,7 @@ static int init_oa_rcs_buffer(struct perf_event *event)
 	dev_priv->oa_pmu.oa_rcs_buffer.obj = bo;
 	dev_priv->oa_pmu.oa_rcs_buffer.gtt_offset =
 				i915_gem_obj_ggtt_offset(bo);
+	dev_priv->oa_pmu.oa_rcs_buffer.vma = i915_gem_obj_to_ggtt(bo);
 	dev_priv->oa_pmu.oa_rcs_buffer.addr = vmap_oa_buffer(bo);
 	INIT_LIST_HEAD(&dev_priv->oa_pmu.node_list);
 
@@ -1006,6 +1088,10 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 	dev_priv->oa_pmu.event_state = I915_OA_EVENT_STARTED;
 	update_oacontrol(dev_priv);
 
+	if (dev_priv->oa_pmu.multiple_ctx_mode)
+		dev_priv->emit_profiling_data[I915_PROFILE_OA] =
+				i915_oa_emit_perf_report;
+
 	/* Reset the head ptr to ensure we don't forward reports relating
 	 * to a previous perf event */
 	oastatus1 = I915_READ(GEN7_OASTATUS1);
@@ -1042,6 +1128,7 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 
 		spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 
+		dev_priv->emit_profiling_data[I915_PROFILE_OA] = NULL;
 		dev_priv->oa_pmu.event_state = I915_OA_EVENT_STOP_IN_PROGRESS;
 		list_for_each_entry(entry, &dev_priv->oa_pmu.node_list, head)
 			entry->discard = true;
