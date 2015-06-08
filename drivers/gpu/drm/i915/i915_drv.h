@@ -1610,6 +1610,22 @@ extern const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[];
 extern const int i915_oa_sampler_balance_mux_config_hsw_len;
 extern const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[];
 extern const int i915_oa_sampler_balance_b_counter_config_hsw_len;
+
+struct i915_oa_ops {
+       void (*init_oa_buffer)(struct perf_event *event);
+       void (*configure_metric_set)(struct perf_event *event);
+       void (*event_start)(struct perf_event *event, int flags);
+       void (*event_stop)(struct perf_event *event, int flags);
+       void (*update_oacontrol)(struct drm_i915_private *dev_priv);
+       void (*context_pin_notify)(struct drm_i915_private *dev_priv,
+                                  struct intel_context *context);
+       void (*context_unpin_notify)(struct drm_i915_private *dev_priv,
+                                    struct intel_context *context);
+       void (*context_switch_notify)(struct drm_i915_private *dev_priv,
+                                     struct intel_engine_cs *ring);
+       void (*flush_oa_snapshots)(struct drm_i915_private *dev_priv,
+                                  bool skip_if_flushing);
+};
 #endif
 
 struct drm_i915_private {
@@ -1900,6 +1916,8 @@ struct drm_i915_private {
 			int format_size;
 			spinlock_t flush_lock;
 		} oa_buffer;
+
+		struct i915_oa_ops ops;
 	} oa_pmu;
 #endif
 

@@ -25,6 +25,7 @@ static int hsw_perf_format_sizes[] = {
 	64   /* C4_B8_HSW */
 };
 
+
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
 					     struct perf_event *event)
@@ -47,9 +48,9 @@ static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 	perf_event_overflow(event, &data, &dev_priv->oa_pmu.dummy_regs);
 }
 
-static u32 forward_oa_snapshots(struct drm_i915_private *dev_priv,
-				u32 head,
-				u32 tail)
+static u32 gen7_forward_oa_snapshots(struct drm_i915_private *dev_priv,
+				     u32 head,
+				     u32 tail)
 {
 	struct perf_event *exclusive_event = dev_priv->oa_pmu.exclusive_event;
 	int snapshot_size = dev_priv->oa_pmu.oa_buffer.format_size;
@@ -113,8 +114,8 @@ static void log_oa_status(struct drm_i915_private *dev_priv,
 	perf_output_end(&handle);
 }
 
-static void flush_oa_snapshots(struct drm_i915_private *dev_priv,
-			       bool skip_if_flushing)
+static void gen7_flush_oa_snapshots(struct drm_i915_private *dev_priv,
+				    bool skip_if_flushing)
 {
 	unsigned long flags;
 	u32 oastatus2;
@@ -157,7 +158,7 @@ static void flush_oa_snapshots(struct drm_i915_private *dev_priv,
 			     GEN7_OASTATUS1_REPORT_LOST));
 	}
 
-	head = forward_oa_snapshots(dev_priv, head, tail);
+	head = gen7_forward_oa_snapshots(dev_priv, head, tail);
 
 	I915_WRITE(GEN7_OASTATUS2, (head & GEN7_OASTATUS2_HEAD_MASK) |
 				    GEN7_OASTATUS2_GGTT);
@@ -247,6 +248,20 @@ finish:
 	return addr;
 }
 
+static void gen7_init_oa_buffer(struct perf_event *event)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
+
+	/* Pre-DevBDW: OABUFFER must be set with counters off,
+	 * before OASTATUS1, but after OASTATUS2 */
+	I915_WRITE(GEN7_OASTATUS2, dev_priv->oa_pmu.oa_buffer.gtt_offset |
+		   GEN7_OASTATUS2_GGTT); /* head */
+	I915_WRITE(GEN7_OABUFFER, dev_priv->oa_pmu.oa_buffer.gtt_offset);
+	I915_WRITE(GEN7_OASTATUS1, dev_priv->oa_pmu.oa_buffer.gtt_offset |
+		   GEN7_OASTATUS1_OABUFFER_SIZE_16M); /* tail */
+}
+
 static int init_oa_buffer(struct perf_event *event)
 {
 	struct drm_i915_private *dev_priv =
@@ -254,7 +269,6 @@ static int init_oa_buffer(struct perf_event *event)
 	struct drm_i915_gem_object *bo;
 	int ret;
 
-	BUG_ON(!IS_HASWELL(dev_priv->dev));
 	BUG_ON(dev_priv->oa_pmu.oa_buffer.obj);
 
 	ret = i915_mutex_lock_interruptible(dev_priv->dev);
@@ -297,13 +311,7 @@ static int init_oa_buffer(struct perf_event *event)
 	dev_priv->oa_pmu.oa_buffer.gtt_offset = i915_gem_obj_ggtt_offset(bo);
 	dev_priv->oa_pmu.oa_buffer.addr = vmap_oa_buffer(bo);
 
-	/* Pre-DevBDW: OABUFFER must be set with counters off,
-	 * before OASTATUS1, but after OASTATUS2 */
-	I915_WRITE(GEN7_OASTATUS2, dev_priv->oa_pmu.oa_buffer.gtt_offset |
-		   GEN7_OASTATUS2_GGTT); /* head */
-	I915_WRITE(GEN7_OABUFFER, dev_priv->oa_pmu.oa_buffer.gtt_offset);
-	I915_WRITE(GEN7_OASTATUS1, dev_priv->oa_pmu.oa_buffer.gtt_offset |
-		   GEN7_OASTATUS1_OABUFFER_SIZE_16M); /* tail */
+	dev_priv->oa_pmu.ops.init_oa_buffer(event);
 
 	DRM_DEBUG_DRIVER("OA Buffer initialized, gtt offset = 0x%x, vaddr = %p",
 			 dev_priv->oa_pmu.oa_buffer.gtt_offset,
@@ -324,10 +332,78 @@ static enum hrtimer_restart hrtimer_sample(struct hrtimer *hrtimer)
 	struct drm_i915_private *i915 =
 		container_of(hrtimer, typeof(*i915), oa_pmu.timer);
 
-	flush_oa_snapshots(i915, true);
+	i915->oa_pmu.ops.flush_oa_snapshots(i915, true);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(PERIOD));
 	return HRTIMER_RESTART;
+}
+
+static void config_oa_regs(struct drm_i915_private *dev_priv,
+			   const struct i915_oa_reg *regs,
+			   int n_regs)
+{
+	int i;
+
+	for (i = 0; i < n_regs; i++) {
+		const struct i915_oa_reg *reg = regs + i;
+
+		I915_WRITE(reg->addr, reg->value);
+	}
+}
+
+static void gen7_configure_metric_set(struct perf_event *event)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
+
+	if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_3D) {
+		config_oa_regs(dev_priv, i915_oa_3d_mux_config_hsw,
+			       i915_oa_3d_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_3d_b_counter_config_hsw,
+			       i915_oa_3d_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE) {
+		config_oa_regs(dev_priv, i915_oa_compute_mux_config_hsw,
+			       i915_oa_compute_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_compute_b_counter_config_hsw,
+			       i915_oa_compute_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE_EXTENDED) {
+		config_oa_regs(dev_priv, i915_oa_compute_extended_mux_config_hsw,
+			       i915_oa_compute_extended_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_compute_extended_b_counter_config_hsw,
+			       i915_oa_compute_extended_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_READS) {
+		config_oa_regs(dev_priv, i915_oa_memory_reads_mux_config_hsw,
+			       i915_oa_memory_reads_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_memory_reads_b_counter_config_hsw,
+			       i915_oa_memory_reads_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_WRITES) {
+		config_oa_regs(dev_priv, i915_oa_memory_writes_mux_config_hsw,
+			       i915_oa_memory_writes_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_memory_writes_b_counter_config_hsw,
+			       i915_oa_memory_writes_b_counter_config_hsw_len);
+	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_SAMPLER_BALANCE) {
+		config_oa_regs(dev_priv, i915_oa_sampler_balance_mux_config_hsw,
+			       i915_oa_sampler_balance_mux_config_hsw_len);
+		config_oa_regs(dev_priv, i915_oa_sampler_balance_b_counter_config_hsw,
+			       i915_oa_sampler_balance_b_counter_config_hsw_len);
+	} else {
+		/* XXX: On Haswell, when threshold disable mode is desired,
+		 * instead of setting the threshold enable to '0', we need to
+		 * program it to '1' and set OASTARTTRIG1 bits 15:0 to 0
+		 * (threshold value of 0)
+		 */
+		I915_WRITE(OASTARTTRIG6, (OASTARTTRIG6_THRESHOLD_ENABLE |
+					  OASTARTTRIG6_EVENT_SELECT_4));
+		I915_WRITE(OASTARTTRIG5, 0); /* threshold value */
+
+		I915_WRITE(OASTARTTRIG2, (OASTARTTRIG2_THRESHOLD_ENABLE |
+					  OASTARTTRIG2_EVENT_SELECT_0));
+		I915_WRITE(OASTARTTRIG1, 0); /* threshold value */
+
+		/* Setup B0 as the gpu clock counter... */
+		I915_WRITE(OACEC0_0, OACEC_COMPARE_GREATER_OR_EQUAL); /* to 0 */
+		I915_WRITE(OACEC0_1, 0xfffe); /* Select NOA[0] */
+	}
 }
 
 static struct intel_context *
@@ -548,6 +624,8 @@ static int i915_oa_event_init(struct perf_event *event)
 	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) |
 				  GEN6_CSUNIT_CLOCK_GATE_DISABLE));
 
+	dev_priv->oa_pmu.ops.configure_metric_set(event);
+
 	event->destroy = i915_oa_event_destroy;
 
 	/* PRM - observability performance counters:
@@ -574,7 +652,7 @@ static int i915_oa_event_init(struct perf_event *event)
  * methods contending with each other) update_oacontrol() may be called
  * asynchronously via the i915_oa_pmu_[un]register() hooks.
  */
-static void update_oacontrol(struct drm_i915_private *dev_priv)
+static void gen7_update_oacontrol(struct drm_i915_private *dev_priv)
 {
 	BUG_ON(!spin_is_locked(&dev_priv->oa_pmu.lock));
 
@@ -617,17 +695,19 @@ static void update_oacontrol(struct drm_i915_private *dev_priv)
 	I915_WRITE(GEN7_OACONTROL, 0);
 }
 
-static void config_oa_regs(struct drm_i915_private *dev_priv,
-			   const struct i915_oa_reg *regs,
-			   int n_regs)
+static void gen7_event_start(struct perf_event *event, int flags)
 {
-	int i;
+	struct drm_i915_private *dev_priv =
+		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
+	u32 oastatus1, tail;
 
-	for (i = 0; i < n_regs; i++) {
-		const struct i915_oa_reg *reg = regs + i;
+	gen7_update_oacontrol(dev_priv);
 
-		I915_WRITE(reg->addr, reg->value);
-	}
+	/* Reset the head ptr so we don't forward reports from before now. */
+	oastatus1 = I915_READ(GEN7_OASTATUS1);
+	tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
+	I915_WRITE(GEN7_OASTATUS2, (tail & GEN7_OASTATUS2_HEAD_MASK) |
+				    GEN7_OASTATUS2_GGTT);
 }
 
 static void i915_oa_event_start(struct perf_event *event, int flags)
@@ -635,68 +715,11 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
 	unsigned long lock_flags;
-	u32 oastatus1, tail;
-
-	if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_3D) {
-		config_oa_regs(dev_priv, i915_oa_3d_mux_config_hsw,
-				i915_oa_3d_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_3d_b_counter_config_hsw,
-				i915_oa_3d_b_counter_config_hsw_len);
-	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE) {
-		config_oa_regs(dev_priv, i915_oa_compute_mux_config_hsw,
-				i915_oa_compute_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_compute_b_counter_config_hsw,
-				i915_oa_compute_b_counter_config_hsw_len);
-	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_COMPUTE_EXTENDED) {
-		config_oa_regs(dev_priv, i915_oa_compute_extended_mux_config_hsw,
-				i915_oa_compute_extended_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_compute_extended_b_counter_config_hsw,
-				i915_oa_compute_extended_b_counter_config_hsw_len);
-	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_READS) {
-		config_oa_regs(dev_priv, i915_oa_memory_reads_mux_config_hsw,
-				i915_oa_memory_reads_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_memory_reads_b_counter_config_hsw,
-				i915_oa_memory_reads_b_counter_config_hsw_len);
-	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_MEMORY_WRITES) {
-		config_oa_regs(dev_priv, i915_oa_memory_writes_mux_config_hsw,
-				i915_oa_memory_writes_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_memory_writes_b_counter_config_hsw,
-				i915_oa_memory_writes_b_counter_config_hsw_len);
-	} else if (dev_priv->oa_pmu.metrics_set == I915_OA_METRICS_SET_SAMPLER_BALANCE) {
-		config_oa_regs(dev_priv, i915_oa_sampler_balance_mux_config_hsw,
-				i915_oa_sampler_balance_mux_config_hsw_len);
-		config_oa_regs(dev_priv, i915_oa_sampler_balance_b_counter_config_hsw,
-				i915_oa_sampler_balance_b_counter_config_hsw_len);
-	} else {
-		/* XXX: On Haswell, when threshold disable mode is desired,
-		 * instead of setting the threshold enable to '0', we need to
-		 * program it to '1' and set OASTARTTRIG1 bits 15:0 to 0
-		 * (threshold value of 0)
-		 */
-		I915_WRITE(OASTARTTRIG6, (OASTARTTRIG6_THRESHOLD_ENABLE |
-					  OASTARTTRIG6_EVENT_SELECT_4));
-		I915_WRITE(OASTARTTRIG5, 0); /* threshold value */
-
-		I915_WRITE(OASTARTTRIG2, (OASTARTTRIG2_THRESHOLD_ENABLE |
-					  OASTARTTRIG2_EVENT_SELECT_0));
-		I915_WRITE(OASTARTTRIG1, 0); /* threshold value */
-
-		/* Setup B0 as the gpu clock counter... */
-		I915_WRITE(OACEC0_0, OACEC_COMPARE_GREATER_OR_EQUAL); /* to 0 */
-		I915_WRITE(OACEC0_1, 0xfffe); /* Select NOA[0] */
-	}
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 
 	dev_priv->oa_pmu.event_active = true;
-	update_oacontrol(dev_priv);
-
-	/* Reset the head ptr to ensure we don't forward reports relating
-	 * to a previous perf event */
-	oastatus1 = I915_READ(GEN7_OASTATUS1);
-	tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
-	I915_WRITE(GEN7_OASTATUS2, (tail & GEN7_OASTATUS2_HEAD_MASK) |
-				    GEN7_OASTATUS2_GGTT);
+	dev_priv->oa_pmu.ops.event_start(event, flags);
 
 	mmiowb();
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
@@ -709,6 +732,14 @@ static void i915_oa_event_start(struct perf_event *event, int flags)
 	event->hw.state = 0;
 }
 
+static void gen7_event_stop(struct perf_event *event, int flags)
+{
+       struct drm_i915_private *dev_priv =
+               container_of(event->pmu, typeof(*dev_priv), oa_pmu.pmu);
+
+       I915_WRITE(GEN7_OACONTROL, 0);
+}
+
 static void i915_oa_event_stop(struct perf_event *event, int flags)
 {
 	struct drm_i915_private *dev_priv =
@@ -718,14 +749,14 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
 
 	dev_priv->oa_pmu.event_active = false;
-	update_oacontrol(dev_priv);
+	dev_priv->oa_pmu.ops.event_stop(event, flags);
 
 	mmiowb();
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, lock_flags);
 
 	if (event->attr.sample_period) {
 		hrtimer_cancel(&dev_priv->oa_pmu.timer);
-		flush_oa_snapshots(dev_priv, false);
+		dev_priv->oa_pmu.ops.flush_oa_snapshots(dev_priv, false);
 	}
 
 	event->hw.state = PERF_HES_STOPPED;
@@ -759,7 +790,7 @@ static int i915_oa_event_flush(struct perf_event *event)
 		struct drm_i915_private *i915 =
 			container_of(event->pmu, typeof(*i915), oa_pmu.pmu);
 
-		flush_oa_snapshots(i915, true);
+		i915->oa_pmu.ops.flush_oa_snapshots(i915, true);
 	}
 
 	return 0;
@@ -770,21 +801,36 @@ static int i915_oa_event_event_idx(struct perf_event *event)
 	return 0;
 }
 
+
+static void gen7_context_pin_notify(struct drm_i915_private *dev_priv,
+                                    struct intel_context *context)
+{
+       if (dev_priv->oa_pmu.specific_ctx == context)
+               gen7_update_oacontrol(dev_priv);
+}
+
 void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 				struct intel_context *context)
 {
 	unsigned long flags;
 
-	if (dev_priv->oa_pmu.pmu.event_init == NULL)
+	if (dev_priv->oa_pmu.pmu.event_init == NULL ||
+	    dev_priv->oa_pmu.ops.context_unpin_notify == NULL)
 		return;
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, flags);
 
-	if (dev_priv->oa_pmu.specific_ctx == context)
-		update_oacontrol(dev_priv);
+	dev_priv->oa_pmu.ops.context_unpin_notify(dev_priv, context);
 
 	mmiowb();
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, flags);
+}
+
+static void gen7_context_unpin_notify(struct drm_i915_private *dev_priv,
+                                      struct intel_context *context)
+{
+       if (dev_priv->oa_pmu.specific_ctx == context)
+               gen7_update_oacontrol(dev_priv);
 }
 
 void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
@@ -792,13 +838,13 @@ void i915_oa_context_unpin_notify(struct drm_i915_private *dev_priv,
 {
 	unsigned long flags;
 
-	if (dev_priv->oa_pmu.pmu.event_init == NULL)
+	if (dev_priv->oa_pmu.pmu.event_init == NULL ||
+	    dev_priv->oa_pmu.ops.context_pin_notify == NULL)
 		return;
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, flags);
 
-	if (dev_priv->oa_pmu.specific_ctx == context)
-		update_oacontrol(dev_priv);
+	dev_priv->oa_pmu.ops.context_unpin_notify(dev_priv, context);
 
 	mmiowb();
 	spin_unlock_irqrestore(&dev_priv->oa_pmu.lock, flags);
@@ -871,6 +917,14 @@ void i915_oa_pmu_register(struct drm_device *dev)
 	i915->oa_pmu.pmu.read	       = i915_oa_event_read;
 	i915->oa_pmu.pmu.flush	       = i915_oa_event_flush;
 	i915->oa_pmu.pmu.event_idx     = i915_oa_event_event_idx;
+
+	i915->oa_pmu.ops.init_oa_buffer = gen7_init_oa_buffer;
+	i915->oa_pmu.ops.configure_metric_set = gen7_configure_metric_set;
+	i915->oa_pmu.ops.event_start = gen7_event_start;
+	i915->oa_pmu.ops.event_stop = gen7_event_stop;
+	i915->oa_pmu.ops.context_pin_notify = gen7_context_pin_notify;
+	i915->oa_pmu.ops.context_unpin_notify = gen7_context_unpin_notify;
+	i915->oa_pmu.ops.flush_oa_snapshots = gen7_flush_oa_snapshots;
 
 	if (perf_pmu_register(&i915->oa_pmu.pmu, "i915_oa", -1))
 		i915->oa_pmu.pmu.event_init = NULL;
