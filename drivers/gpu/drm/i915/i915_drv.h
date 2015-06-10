@@ -736,6 +736,7 @@ struct intel_device_info {
 	int cursor_offsets[I915_MAX_PIPES];
 
 	/* Slice/subslice/EU info */
+	u32 slice_mask;
 	u8 slice_total;
 	u8 subslice_total;
 	u8 subslice_per_slice;
