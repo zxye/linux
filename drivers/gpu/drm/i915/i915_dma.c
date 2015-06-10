@@ -576,8 +576,8 @@ static void broadwell_sseu_info_init(struct drm_device *dev)
 	fuse2 = I915_READ(GEN8_FUSE2);
 	s_enable = (fuse2 & GEN8_F2_S_ENA_MASK) >>
 		   GEN8_F2_S_ENA_SHIFT;
-	ss_disable = (fuse2 & GEN9_F2_SS_DIS_MASK) >>
-		     GEN9_F2_SS_DIS_SHIFT;
+	ss_disable = (fuse2 & GEN8_F2_SS_DIS_MASK) >>
+		     GEN8_F2_SS_DIS_SHIFT;
 
 	eu_dis0 = I915_READ(GEN8_EU_DISABLE0);
         eu_dis1 = I915_READ(GEN8_EU_DISABLE1);
