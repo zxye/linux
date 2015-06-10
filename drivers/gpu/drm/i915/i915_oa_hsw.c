@@ -26,6 +26,14 @@
 
 #include "i915_drv.h"
 
+const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[] = {
+	{ 0x2724, 0x00800000 },
+	{ 0x2720, 0x00000000 },
+	{ 0x2714, 0x00800000 },
+	{ 0x2710, 0x00000000 },
+};
+const int i915_oa_3d_b_counter_config_hsw_len = 4;
+
 const struct i915_oa_reg i915_oa_3d_mux_config_hsw[] = {
 	{ 0x253A4, 0x01600000 },
 	{ 0x25440, 0x00100000 },
@@ -89,13 +97,25 @@ const struct i915_oa_reg i915_oa_3d_mux_config_hsw[] = {
 };
 const int i915_oa_3d_mux_config_hsw_len = 59;
 
-const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[] = {
-	{ 0x2724, 0x00800000 },
-	{ 0x2720, 0x00000000 },
-	{ 0x2714, 0x00800000 },
+const struct i915_oa_reg i915_oa_compute_b_counter_config_hsw[] = {
 	{ 0x2710, 0x00000000 },
+	{ 0x2714, 0x00800000 },
+	{ 0x2718, 0xAAAAAAAA },
+	{ 0x271C, 0xAAAAAAAA },
+	{ 0x2720, 0x00000000 },
+	{ 0x2724, 0x00800000 },
+	{ 0x2728, 0xAAAAAAAA },
+	{ 0x272C, 0xAAAAAAAA },
+	{ 0x2740, 0x00000000 },
+	{ 0x2744, 0x00000000 },
+	{ 0x2748, 0x00000000 },
+	{ 0x274C, 0x00000000 },
+	{ 0x2750, 0x00000000 },
+	{ 0x2754, 0x00000000 },
+	{ 0x2758, 0x00000000 },
+	{ 0x275C, 0x00000000 },
 };
-const int i915_oa_3d_b_counter_config_hsw_len = 4;
+const int i915_oa_compute_b_counter_config_hsw_len = 16;
 
 const struct i915_oa_reg i915_oa_compute_mux_config_hsw[] = {
 	{ 0x253A4, 0x00000000 },
@@ -133,45 +153,6 @@ const struct i915_oa_reg i915_oa_compute_mux_config_hsw[] = {
 };
 const int i915_oa_compute_mux_config_hsw_len = 32;
 
-const struct i915_oa_reg i915_oa_compute_b_counter_config_hsw[] = {
-	{ 0x2710, 0x00000000 },
-	{ 0x2714, 0x00800000 },
-	{ 0x2718, 0xAAAAAAAA },
-	{ 0x271C, 0xAAAAAAAA },
-	{ 0x2720, 0x00000000 },
-	{ 0x2724, 0x00800000 },
-	{ 0x2728, 0xAAAAAAAA },
-	{ 0x272C, 0xAAAAAAAA },
-	{ 0x2740, 0x00000000 },
-	{ 0x2744, 0x00000000 },
-	{ 0x2748, 0x00000000 },
-	{ 0x274C, 0x00000000 },
-	{ 0x2750, 0x00000000 },
-	{ 0x2754, 0x00000000 },
-	{ 0x2758, 0x00000000 },
-	{ 0x275C, 0x00000000 },
-};
-const int i915_oa_compute_b_counter_config_hsw_len = 16;
-
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_hsw[] = {
-	{ 0x2681C, 0x3EB00800 },
-	{ 0x26820, 0x00900000 },
-	{ 0x25384, 0x02AAAAAA },
-	{ 0x25404, 0x03FFFFFF },
-	{ 0x26800, 0x00142284 },
-	{ 0x26808, 0x0E629062 },
-	{ 0x2680C, 0x3F6F55CB },
-	{ 0x26810, 0x00000014 },
-	{ 0x26804, 0x00000000 },
-	{ 0x26104, 0x02AAAAAA },
-	{ 0x26184, 0x02AAAAAA },
-	{ 0x25420, 0x00000000 },
-	{ 0x25424, 0x00000000 },
-	{ 0x2541C, 0x00000000 },
-	{ 0x25428, 0x00000000 },
-};
-const int i915_oa_compute_extended_mux_config_hsw_len = 15;
-
 const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_hsw[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
@@ -196,27 +177,24 @@ const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_hsw[] = {
 };
 const int i915_oa_compute_extended_b_counter_config_hsw_len = 20;
 
-const struct i915_oa_reg i915_oa_memory_reads_mux_config_hsw[] = {
-	{ 0x253A4, 0x34300000 },
-	{ 0x25440, 0x2D800000 },
-	{ 0x25444, 0x00000008 },
-	{ 0x25128, 0x0E600000 },
-	{ 0x25380, 0x00000450 },
-	{ 0x25390, 0x00052C43 },
-	{ 0x25384, 0x00000000 },
-	{ 0x25400, 0x00006144 },
-	{ 0x25408, 0x0A418820 },
-	{ 0x2540C, 0x000820E6 },
-	{ 0x25404, 0xFF500000 },
-	{ 0x25100, 0x000005D6 },
-	{ 0x2510C, 0x0EF00000 },
-	{ 0x25104, 0x00000000 },
-	{ 0x25420, 0x02108421 },
-	{ 0x25424, 0x00008421 },
+const struct i915_oa_reg i915_oa_compute_extended_mux_config_hsw[] = {
+	{ 0x2681C, 0x3EB00800 },
+	{ 0x26820, 0x00900000 },
+	{ 0x25384, 0x02AAAAAA },
+	{ 0x25404, 0x03FFFFFF },
+	{ 0x26800, 0x00142284 },
+	{ 0x26808, 0x0E629062 },
+	{ 0x2680C, 0x3F6F55CB },
+	{ 0x26810, 0x00000014 },
+	{ 0x26804, 0x00000000 },
+	{ 0x26104, 0x02AAAAAA },
+	{ 0x26184, 0x02AAAAAA },
+	{ 0x25420, 0x00000000 },
+	{ 0x25424, 0x00000000 },
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000000 },
 };
-const int i915_oa_memory_reads_mux_config_hsw_len = 18;
+const int i915_oa_compute_extended_mux_config_hsw_len = 15;
 
 const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_hsw[] = {
 	{ 0x2724, 0xf0800000 },
@@ -250,27 +228,27 @@ const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_hsw[] = {
 };
 const int i915_oa_memory_reads_b_counter_config_hsw_len = 28;
 
-const struct i915_oa_reg i915_oa_memory_writes_mux_config_hsw[] = {
+const struct i915_oa_reg i915_oa_memory_reads_mux_config_hsw[] = {
 	{ 0x253A4, 0x34300000 },
-	{ 0x25440, 0x01500000 },
-	{ 0x25444, 0x00000120 },
-	{ 0x25128, 0x0C200000 },
+	{ 0x25440, 0x2D800000 },
+	{ 0x25444, 0x00000008 },
+	{ 0x25128, 0x0E600000 },
 	{ 0x25380, 0x00000450 },
 	{ 0x25390, 0x00052C43 },
 	{ 0x25384, 0x00000000 },
-	{ 0x25400, 0x00007184 },
+	{ 0x25400, 0x00006144 },
 	{ 0x25408, 0x0A418820 },
 	{ 0x2540C, 0x000820E6 },
 	{ 0x25404, 0xFF500000 },
 	{ 0x25100, 0x000005D6 },
-	{ 0x2510C, 0x1E700000 },
+	{ 0x2510C, 0x0EF00000 },
 	{ 0x25104, 0x00000000 },
 	{ 0x25420, 0x02108421 },
 	{ 0x25424, 0x00008421 },
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000000 },
 };
-const int i915_oa_memory_writes_mux_config_hsw_len = 18;
+const int i915_oa_memory_reads_mux_config_hsw_len = 18;
 
 const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_hsw[] = {
 	{ 0x2724, 0xf0800000 },
@@ -303,6 +281,38 @@ const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_hsw[] = {
 	{ 0x27ac, 0x0000fc00 },
 };
 const int i915_oa_memory_writes_b_counter_config_hsw_len = 28;
+
+const struct i915_oa_reg i915_oa_memory_writes_mux_config_hsw[] = {
+	{ 0x253A4, 0x34300000 },
+	{ 0x25440, 0x01500000 },
+	{ 0x25444, 0x00000120 },
+	{ 0x25128, 0x0C200000 },
+	{ 0x25380, 0x00000450 },
+	{ 0x25390, 0x00052C43 },
+	{ 0x25384, 0x00000000 },
+	{ 0x25400, 0x00007184 },
+	{ 0x25408, 0x0A418820 },
+	{ 0x2540C, 0x000820E6 },
+	{ 0x25404, 0xFF500000 },
+	{ 0x25100, 0x000005D6 },
+	{ 0x2510C, 0x1E700000 },
+	{ 0x25104, 0x00000000 },
+	{ 0x25420, 0x02108421 },
+	{ 0x25424, 0x00008421 },
+	{ 0x2541C, 0x00000000 },
+	{ 0x25428, 0x00000000 },
+};
+const int i915_oa_memory_writes_mux_config_hsw_len = 18;
+
+const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[] = {
+	{ 0x2740, 0x00000000 },
+	{ 0x2744, 0x00800000 },
+	{ 0x2710, 0x00000000 },
+	{ 0x2714, 0x00800000 },
+	{ 0x2720, 0x00000000 },
+	{ 0x2724, 0x00800000 },
+};
+const int i915_oa_sampler_balance_b_counter_config_hsw_len = 6;
 
 const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[] = {
 	{ 0x2eb9c, 0x01906400 },
@@ -347,13 +357,3 @@ const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[] = {
 	{ 0x25428, 0x0004a54a },
 };
 const int i915_oa_sampler_balance_mux_config_hsw_len = 40;
-
-const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[] = {
-	{ 0x2740, 0x00000000 },
-	{ 0x2744, 0x00800000 },
-	{ 0x2710, 0x00000000 },
-	{ 0x2714, 0x00800000 },
-	{ 0x2720, 0x00000000 },
-	{ 0x2724, 0x00800000 },
-};
-const int i915_oa_sampler_balance_b_counter_config_hsw_len = 6;

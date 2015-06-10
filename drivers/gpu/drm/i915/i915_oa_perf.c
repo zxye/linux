@@ -3,6 +3,7 @@
 
 #include "i915_drv.h"
 #include "intel_ringbuffer.h"
+#include "i915_oa_hsw.h"
 
 /* Must be a power of two */
 #define OA_BUFFER_SIZE	     SZ_16M
