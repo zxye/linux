@@ -592,6 +592,7 @@ static void broadwell_sseu_info_init(struct drm_device *dev)
 	 * The subslice disable field is global, i.e. it applies
 	 * to each of the enabled slices.
 	*/
+	info->subslice_mask = ss_disable ^ ((2 << ss_max) - 1);
 	info->subslice_per_slice = ss_max - hweight32(ss_disable);
 	info->subslice_total = info->slice_total *
 			       info->subslice_per_slice;
@@ -659,8 +660,10 @@ static void cherryview_sseu_info_init(struct drm_device *dev)
 
 	info->slice_mask = 1;
 	info->slice_total = 1;
+	info->subslice_mask = 0;
 
 	if (!(fuse & CHV_FGT_DISABLE_SS0)) {
+		info->subslice_mask |= 0x1;
 		info->subslice_per_slice++;
 		eu_dis = fuse & (CHV_FGT_EU_DIS_SS0_R0_MASK |
 				 CHV_FGT_EU_DIS_SS0_R1_MASK);
@@ -668,6 +671,7 @@ static void cherryview_sseu_info_init(struct drm_device *dev)
 	}
 
 	if (!(fuse & CHV_FGT_DISABLE_SS1)) {
+		info->subslice_mask |= 0x2;
 		info->subslice_per_slice++;
 		eu_dis = fuse & (CHV_FGT_EU_DIS_SS1_R0_MASK |
 				 CHV_FGT_EU_DIS_SS1_R1_MASK);
@@ -725,6 +729,7 @@ static void gen9_sseu_info_init(struct drm_device *dev)
 	 * The subslice disable field is global, i.e. it applies
 	 * to each of the enabled slices.
 	*/
+	info->subslice_mask = ss_disable ^ ((2 << ss_max) - 1);
 	info->subslice_per_slice = ss_max - hweight32(ss_disable);
 	info->subslice_total = info->slice_total *
 			       info->subslice_per_slice;

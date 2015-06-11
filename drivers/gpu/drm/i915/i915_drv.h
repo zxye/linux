@@ -740,6 +740,7 @@ struct intel_device_info {
 	u8 slice_total;
 	u8 subslice_total;
 	u8 subslice_per_slice;
+	u8 subslice_mask;
 	u8 eu_total;
 	u8 eu_per_subslice;
 	/* For each slice, which subslice(s) has(have) 7 EUs (bitfield)? */
