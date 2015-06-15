@@ -801,6 +801,8 @@ done:
 		}
 	}
 
+	i915_oa_context_switch_notify(dev_priv, ring);
+
 	return 0;
 
 unpin_out:
