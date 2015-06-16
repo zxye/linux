@@ -384,6 +384,7 @@ typedef struct drm_i915_irq_wait {
 #define I915_PARAM_REVISION              32
 #define I915_PARAM_SUBSLICE_TOTAL	 33
 #define I915_PARAM_EU_TOTAL		 34
+#define I915_PARAM_SLICE_MASK		 37
 
 typedef struct drm_i915_getparam {
 	int param;
