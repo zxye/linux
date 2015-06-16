@@ -27,6 +27,16 @@ static int hsw_perf_format_sizes[] = {
 	64   /* C4_B8_HSW */
 };
 
+static int bdw_perf_format_sizes[] = {
+       64,  /* A12_BDW */
+       -1,  /* invalid */
+       128, /* A12_B8_C8_BDW */
+       -1,  /* invalid */
+       -1,  /* invalid */
+       256, /* A36_B8_C8_BDW */
+       -1,  /* invalid */
+       64,  /* C4_B8_BDW */
+};
 
 static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 					     u8 *snapshot,
@@ -576,7 +586,6 @@ static void gen8_configure_metric_set(struct perf_event *event)
 	dev_priv->oa_pmu.flex_regs = NULL;
 	dev_priv->oa_pmu.flex_regs_len = 0;
 
-#warning "Add metric_set validation early on in i915_oa_event_init()"
 	switch (dev_priv->oa_pmu.metrics_set) {
 	case I915_OA_METRICS_SET_3D:
 		if (INTEL_INFO(dev_priv)->slice_mask & 0x1) {
@@ -737,6 +746,20 @@ static int i915_oa_event_init(struct perf_event *event)
 		dev_priv->oa_pmu.oa_buffer.format_size = snapshot_size;
 
 		if (oa_attr.metrics_set > I915_OA_METRICS_SET_MAX)
+			return -EINVAL;
+	} else if (IS_BROADWELL(dev_priv->dev)) {
+		int snapshot_size;
+
+		if (report_format >= ARRAY_SIZE(bdw_perf_format_sizes))
+			return -EINVAL;
+
+		snapshot_size = bdw_perf_format_sizes[report_format];
+		if (snapshot_size < 0)
+			return -EINVAL;
+
+		dev_priv->oa_pmu.oa_buffer.format_size = snapshot_size;
+
+		if (oa_attr.metrics_set != I915_OA_METRICS_SET_3D)
 			return -EINVAL;
 	} else {
 		BUG(); /* pmu shouldn't have been registered */
