@@ -391,6 +391,7 @@ typedef struct drm_i915_irq_wait {
 #define I915_PARAM_MIN_EU_IN_POOL	 39
 #define I915_PARAM_MMAP_GTT_VERSION	 40
 #define I915_PARAM_SLICE_MASK		 45 /* XXX: rebase before landing */
+#define I915_PARAM_SUBSLICE_MASK	 46
 
 typedef struct drm_i915_getparam {
 	__s32 param;
