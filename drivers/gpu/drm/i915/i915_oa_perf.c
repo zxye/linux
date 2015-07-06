@@ -448,6 +448,21 @@ static int i915_gen_pmu_wait_gpu(struct drm_i915_private *dev_priv)
 	return 0;
 }
 
+static void i915_gen_pmu_release_request_ref(struct drm_i915_private *dev_priv)
+{
+	struct i915_gen_pmu_node *entry, *next;
+
+	list_for_each_entry_safe
+		(entry, next, &dev_priv->gen_pmu.node_list, head) {
+		i915_gem_request_unreference__unlocked(entry->req);
+
+		spin_lock(&dev_priv->gen_pmu.lock);
+		list_del(&entry->head);
+		spin_unlock(&dev_priv->gen_pmu.lock);
+		kfree(entry);
+	}
+}
+
 static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 				struct i915_gen_pmu_node *node)
 {
@@ -498,7 +513,8 @@ static void forward_gen_pmu_snapshots(struct drm_i915_private *dev_priv)
 		if (!i915_gem_request_completed(entry->req, true))
 			break;
 
-		forward_one_gen_pmu_sample(dev_priv, entry);
+		if (!entry->discard)
+			forward_one_gen_pmu_sample(dev_priv, entry);
 
 		spin_lock(&dev_priv->gen_pmu.lock);
 		list_move_tail(&entry->head, &deferred_list_free);
@@ -522,6 +538,13 @@ static void forward_gen_pmu_work_fn(struct work_struct *__work)
 {
 	struct drm_i915_private *dev_priv =
 		container_of(__work, typeof(*dev_priv), gen_pmu.forward_work);
+
+	spin_lock(&dev_priv->gen_pmu.lock);
+	if (dev_priv->gen_pmu.event_active != true) {
+		spin_unlock(&dev_priv->gen_pmu.lock);
+		return;
+	}
+	spin_unlock(&dev_priv->gen_pmu.lock);
 
 	forward_gen_pmu_snapshots(dev_priv);
 }
@@ -670,12 +693,6 @@ static void gen_buffer_destroy(struct drm_i915_private *i915)
 	i915_gem_object_ggtt_unpin(i915->gen_pmu.buffer.obj);
 	drm_gem_object_unreference(&i915->gen_pmu.buffer.obj->base);
 	mutex_unlock(&i915->dev->struct_mutex);
-
-	spin_lock(&i915->gen_pmu.lock);
-	i915->gen_pmu.buffer.obj = NULL;
-	i915->gen_pmu.buffer.gtt_offset = 0;
-	i915->gen_pmu.buffer.addr = NULL;
-	spin_unlock(&i915->gen_pmu.lock);
 }
 
 static void i915_gen_event_destroy(struct perf_event *event)
@@ -685,10 +702,44 @@ static void i915_gen_event_destroy(struct perf_event *event)
 
 	WARN_ON(event->parent);
 
-	gen_buffer_destroy(i915);
+	cancel_work_sync(&i915->gen_pmu.forward_work);
 
 	BUG_ON(i915->gen_pmu.exclusive_event != event);
 	i915->gen_pmu.exclusive_event = NULL;
+
+	/* We can deference our local copy of dest buffer here, since
+	 * an active reference of buffer would be taken while
+	 * inserting commands. So the buffer would be freed up only
+	 * after GPU is done with it.
+	 */
+	gen_buffer_destroy(i915);
+
+	schedule_work(&i915->gen_pmu.event_destroy_work);
+}
+
+static void i915_gen_pmu_event_destroy_work(struct work_struct *__work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(__work, typeof(*dev_priv),
+			gen_pmu.event_destroy_work);
+	int ret;
+
+	ret = i915_gen_pmu_wait_gpu(dev_priv);
+	if (ret)
+		goto out;
+
+	i915_gen_pmu_release_request_ref(dev_priv);
+
+out:
+	/*
+	 * Done here, as this excludes a new event till we've done processing
+	 * the old one
+	 */
+	spin_lock(&dev_priv->gen_pmu.lock);
+	dev_priv->gen_pmu.buffer.obj = NULL;
+	dev_priv->gen_pmu.buffer.gtt_offset = 0;
+	dev_priv->gen_pmu.buffer.addr = NULL;
+	spin_unlock(&dev_priv->gen_pmu.lock);
 }
 
 static int alloc_obj(struct drm_i915_private *dev_priv,
@@ -1411,6 +1462,7 @@ static int i915_gen_event_init(struct perf_event *event)
 {
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), gen_pmu.pmu);
+	unsigned long lock_flags;
 	int ret = 0;
 
 	if (event->attr.type != event->pmu->type)
@@ -1419,8 +1471,12 @@ static int i915_gen_event_init(struct perf_event *event)
 	/* To avoid the complexity of having to accurately filter
 	 * data and marshal to the appropriate client
 	 * we currently only allow exclusive access */
-	if (dev_priv->gen_pmu.buffer.obj)
+	spin_lock_irqsave(&dev_priv->gen_pmu.lock, lock_flags);
+	if (dev_priv->gen_pmu.buffer.obj) {
+		spin_unlock_irqrestore(&dev_priv->gen_pmu.lock, lock_flags);
 		return -EBUSY;
+	}
+	spin_unlock_irqrestore(&dev_priv->gen_pmu.lock, lock_flags);
 
 	/*
 	 * We need to check for CAP_SYS_ADMIN capability as we profile all
@@ -1460,13 +1516,16 @@ static void i915_gen_event_stop(struct perf_event *event, int flags)
 {
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), gen_pmu.pmu);
-
-	spin_lock(&dev_priv->gen_pmu.lock);
-	dev_priv->gen_pmu.event_active = false;
-	spin_unlock(&dev_priv->gen_pmu.lock);
+	struct i915_gen_pmu_node *entry;
 
 	hrtimer_cancel(&dev_priv->gen_pmu.timer);
 	schedule_work(&dev_priv->gen_pmu.forward_work);
+
+	spin_lock(&dev_priv->gen_pmu.lock);
+	dev_priv->gen_pmu.event_active = false;
+	list_for_each_entry(entry, &dev_priv->gen_pmu.node_list, head)
+		entry->discard = true;
+	spin_unlock(&dev_priv->gen_pmu.lock);
 
 	event->hw.state = PERF_HES_STOPPED;
 }
@@ -1654,6 +1713,9 @@ void i915_gen_pmu_register(struct drm_device *dev)
 	i915->gen_pmu.timer.function = hrtimer_sample_gen;
 
 	INIT_WORK(&i915->gen_pmu.forward_work, forward_gen_pmu_work_fn);
+	INIT_WORK(&i915->gen_pmu.event_destroy_work,
+			i915_gen_pmu_event_destroy_work);
+
 	spin_lock_init(&i915->gen_pmu.lock);
 
 	i915->gen_pmu.pmu.capabilities  = PERF_PMU_CAP_IS_DEVICE;
@@ -1684,6 +1746,7 @@ void i915_gen_pmu_unregister(struct drm_device *dev)
 		return;
 
 	cancel_work_sync(&i915->gen_pmu.forward_work);
+	cancel_work_sync(&i915->gen_pmu.event_destroy_work);
 
 	perf_pmu_unregister(&i915->gen_pmu.pmu);
 	i915->gen_pmu.pmu.event_init = NULL;

@@ -1613,6 +1613,7 @@ struct i915_gen_pmu_node {
 	struct list_head head;
 	struct drm_i915_gem_request *req;
 	u32 offset;
+	bool discard;
 	u32 ctx_id;
 };
 
@@ -1970,6 +1971,7 @@ struct drm_i915_private {
 		} buffer;
 		struct list_head node_list;
 		struct work_struct forward_work;
+		struct work_struct event_destroy_work;
 	} gen_pmu;
 
 	void (*emit_profiling_data[I915_PROFILE_MAX])
