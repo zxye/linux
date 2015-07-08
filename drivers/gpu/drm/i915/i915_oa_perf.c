@@ -48,8 +48,7 @@ static void forward_one_oa_snapshot_to_event(struct drm_i915_private *dev_priv,
 }
 
 static u32 forward_oa_snapshots(struct drm_i915_private *dev_priv,
-				u32 head,
-				u32 tail)
+				u32 head, u32 tail, u64 gpu_ts)
 {
 	struct perf_event *exclusive_event = dev_priv->oa_pmu.exclusive_event;
 	int snapshot_size = dev_priv->oa_pmu.oa_buffer.format_size;
@@ -57,14 +56,6 @@ static u32 forward_oa_snapshots(struct drm_i915_private *dev_priv,
 	u32 mask = (OA_BUFFER_SIZE - 1);
 	u8 *snapshot;
 	u32 taken;
-
-	/*
-	 * Schedule a worker to forward the RCS based OA reports collected.
-	 * A worker is needed since it requires device mutex to be taken
-	 * which can't be done here because of atomic context
-	 */
-	if (dev_priv->oa_pmu.multiple_ctx_mode)
-		schedule_work(&dev_priv->oa_pmu.forward_work);
 
 	head -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
 	tail -= dev_priv->oa_pmu.oa_buffer.gtt_offset;
@@ -75,12 +66,19 @@ static u32 forward_oa_snapshots(struct drm_i915_private *dev_priv,
 	 */
 
 	while ((taken = OA_TAKEN(tail, head))) {
+		u64 snapshot_ts;
+
 		/* The tail increases in 64 byte increments, not in
 		 * format_size steps. */
 		if (taken < snapshot_size)
 			break;
 
 		snapshot = oa_buf_base + (head & mask);
+
+		snapshot_ts = *(u64 *)(snapshot + 4);
+		if (snapshot_ts > gpu_ts)
+			break;
+
 		head += snapshot_size;
 
 		/* We currently only allow exclusive access to the counters
@@ -122,7 +120,7 @@ static void log_oa_status(struct drm_i915_private *dev_priv,
 }
 
 static void flush_oa_snapshots(struct drm_i915_private *dev_priv,
-			       bool skip_if_flushing)
+			       bool skip_if_flushing, u64 gpu_ts)
 {
 	unsigned long flags;
 	u32 oastatus2;
@@ -165,7 +163,7 @@ static void flush_oa_snapshots(struct drm_i915_private *dev_priv,
 			     GEN7_OASTATUS1_REPORT_LOST));
 	}
 
-	head = forward_oa_snapshots(dev_priv, head, tail);
+	head = forward_oa_snapshots(dev_priv, head, tail, gpu_ts);
 
 	I915_WRITE(GEN7_OASTATUS2, (head & GEN7_OASTATUS2_HEAD_MASK) |
 				    GEN7_OASTATUS2_GGTT);
@@ -213,6 +211,7 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 	u8 *snapshot;
 	struct drm_i915_oa_node_ctx_id *ctx_info;
 	struct perf_raw_record raw;
+	u64 snapshot_ts;
 
 	format_size = dev_priv->oa_pmu.oa_rcs_buffer.format_size;
 	snapshot_size = format_size + sizeof(*ctx_info);
@@ -220,6 +219,10 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 
 	ctx_info = (struct drm_i915_oa_node_ctx_id *)(snapshot + format_size);
 	ctx_info->ctx_id = node->ctx_id;
+
+	/* Flush the periodic snapshots till the ts of this OA report */
+	snapshot_ts = *(u64 *)(snapshot + 4);
+	flush_oa_snapshots(dev_priv, true, snapshot_ts);
 
 	perf_sample_data_init(&data, 0, event->hw.last_period);
 
@@ -516,7 +519,10 @@ static enum hrtimer_restart hrtimer_sample(struct hrtimer *hrtimer)
 	struct drm_i915_private *i915 =
 		container_of(hrtimer, typeof(*i915), oa_pmu.timer);
 
-	flush_oa_snapshots(i915, true);
+	if (i915->oa_pmu.multiple_ctx_mode)
+		schedule_work(&i915->oa_pmu.forward_work);
+	else
+		flush_oa_snapshots(i915, true, U64_MAX);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(PERIOD));
 	return HRTIMER_RESTART;
@@ -944,7 +950,9 @@ static void i915_oa_event_stop(struct perf_event *event, int flags)
 
 	if (event->attr.sample_period) {
 		hrtimer_cancel(&dev_priv->oa_pmu.timer);
-		flush_oa_snapshots(dev_priv, false);
+		if (dev_priv->oa_pmu.multiple_ctx_mode)
+			schedule_work(&dev_priv->oa_pmu.forward_work);
+		flush_oa_snapshots(dev_priv, false, U64_MAX);
 	}
 
 	event->hw.state = PERF_HES_STOPPED;
@@ -984,8 +992,8 @@ static int i915_oa_event_flush(struct perf_event *event)
 			if (ret)
 				return ret;
 			forward_oa_rcs_snapshots(i915);
-		}
-		flush_oa_snapshots(i915, true);
+		} else
+			flush_oa_snapshots(i915, true, U64_MAX);
 	}
 
 	return 0;
