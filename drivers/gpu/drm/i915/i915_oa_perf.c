@@ -69,6 +69,8 @@ static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
 	}
 
 	entry->ctx_id = global_ctx_id;
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_PID)
+		entry->pid = current->pid;
 	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
 
 	spin_lock_irqsave(&dev_priv->oa_pmu.lock, lock_flags);
@@ -303,8 +305,9 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 	struct perf_sample_data data;
 	struct perf_event *event = dev_priv->oa_pmu.exclusive_event;
 	int format_size, snapshot_size;
-	u8 *snapshot;
+	u8 *snapshot, *current_ptr;
 	struct drm_i915_oa_node_ctx_id *ctx_info;
+	struct drm_i915_oa_node_pid *pid_info;
 	struct perf_raw_record raw;
 	u64 snapshot_ts;
 
@@ -314,6 +317,14 @@ static void forward_one_oa_rcs_sample(struct drm_i915_private *dev_priv,
 
 	ctx_info = (struct drm_i915_oa_node_ctx_id *)(snapshot + format_size);
 	ctx_info->ctx_id = node->ctx_id;
+	current_ptr = snapshot + snapshot_size;
+
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_PID) {
+		pid_info = (struct drm_i915_oa_node_pid *)current_ptr;
+		pid_info->pid = node->pid;
+		snapshot_size += sizeof(*pid_info);
+		current_ptr = snapshot + snapshot_size;
+	}
 
 	/* Flush the periodic snapshots till the ts of this OA report */
 	snapshot_ts = *(u64 *)(snapshot + 4);
@@ -672,6 +683,9 @@ static int init_oa_rcs_buffer(struct perf_event *event)
 	node_size = dev_priv->oa_pmu.oa_rcs_buffer.format_size +
 			sizeof(struct drm_i915_oa_node_ctx_id);
 
+	if (dev_priv->oa_pmu.sample_info_flags & I915_OA_SAMPLE_PID)
+		node_size += sizeof(struct drm_i915_oa_node_pid);
+
 	/* node size has to be aligned to 64 bytes, since only 64 byte aligned
 	 * addresses can be given to OA unit for dumping OA reports */
 	node_size = ALIGN(node_size, 64);
@@ -824,6 +838,9 @@ static int i915_oa_event_init(struct perf_event *event)
 		if (!capable(CAP_SYS_ADMIN))
 			return -EACCES;
 		dev_priv->oa_pmu.multiple_ctx_mode = true;
+		if (oa_attr.sample_pid)
+			dev_priv->oa_pmu.sample_info_flags |=
+					I915_OA_SAMPLE_PID;
 	}
 
 	report_format = oa_attr.format;
