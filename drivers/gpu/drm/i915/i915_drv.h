@@ -1722,6 +1722,7 @@ struct i915_perf_cs_data_node {
 	struct drm_i915_gem_request *request;
 	u32 offset;
 	u32 ctx_id;
+	u32 pid;
 };
 
 struct drm_i915_private {
