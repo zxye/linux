@@ -1255,6 +1255,12 @@ enum drm_i915_perf_property_id {
 	 */
 	DRM_I915_PERF_PROP_SAMPLE_CTX_ID,
 
+	/**
+	 * The value of this property set to 1 requests inclusion of pid in the
+	 * perf sample data.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_PID,
+
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
 
@@ -1306,6 +1312,7 @@ enum drm_i915_perf_record_type {
 	 *
 	 *     { u32 source_info; } && DRM_I915_PERF_PROP_SAMPLE_OA_SOURCE
 	 *     { u32 ctx_id; } && DRM_I915_PERF_PROP_SAMPLE_CTX_ID
+	 *     { u32 pid; } && DRM_I915_PERF_PROP_SAMPLE_PID
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
