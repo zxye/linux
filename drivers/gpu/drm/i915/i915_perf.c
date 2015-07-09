@@ -55,6 +55,7 @@ static u32 i915_perf_stream_paranoid = true;
 struct oa_sample_data {
 	u32 source;
 	u32 ctx_id;
+	u32 pid;
 	const u8 *report;
 };
 
@@ -96,6 +97,7 @@ static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
 #define SAMPLE_OA_REPORT	(1<<0)
 #define SAMPLE_OA_SOURCE_INFO	(1<<1)
 #define SAMPLE_CTX_ID		(1<<2)
+#define SAMPLE_PID		(1<<3)
 
 struct perf_open_properties
 {
@@ -255,6 +257,7 @@ static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
 	}
 
 	entry->ctx_id = ctx->global_id;
+	entry->pid = current->pid;
 	i915_gem_request_assign(&entry->request, req);
 
 	insert_perf_entry(dev_priv, entry);
@@ -405,6 +408,12 @@ static bool append_oa_sample(struct i915_perf_stream *stream,
 		read_state->buf += 4;
 	}
 
+	if (sample_flags & SAMPLE_PID) {
+		if (copy_to_user(read_state->buf, &data->pid, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
 	if (sample_flags & SAMPLE_OA_REPORT) {
 		if (copy_to_user(read_state->buf, data->report, report_size))
 			return false;
@@ -445,6 +454,10 @@ static bool append_oa_buffer_sample(struct i915_perf_stream *stream,
 #warning "FIXME: append_oa_buffer_sample: read ctx ID from report and map that to an intel_context::global_id"
 	if (sample_flags & SAMPLE_CTX_ID)
 		data.ctx_id = 0;
+
+#warning "FIXME: append_oa_buffer_sample: deduce pid for periodic samples based on most recent RCS pid for ctx"
+	if (sample_flags & SAMPLE_PID)
+		data.pid = 0;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -684,6 +697,9 @@ static bool append_oa_rcs_sample(struct i915_perf_stream *stream,
 
 	if (sample_flags & SAMPLE_CTX_ID)
 		data.ctx_id = node->ctx_id;
+
+	if (sample_flags & SAMPLE_PID)
+		data.pid = node->pid;
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1307,6 +1323,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	bool require_oa_unit = props->sample_flags & (SAMPLE_OA_REPORT |
 						      SAMPLE_OA_SOURCE_INFO);
+	bool require_cs_mode = props->sample_flags & SAMPLE_PID;
 	int format_size;
 	int ret;
 
@@ -1416,8 +1433,20 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 			require_cs_mode = true;
 	}
 
+	if (require_cs_mode && !props->cs_mode) {
+		DRM_ERROR("PID sampling requires a ring to be specified");
+		ret = -EINVAL;
+		goto cs_error;
+	}
+
 	if (props->cs_mode) {
-		if (!(props->sample_flags & SAMPLE_CTX_ID)) {
+		/*
+		 * The only time we should allow enabling CS mode if it's not
+		 * strictly required, is if SAMPLE_CTX_ID has been requested
+		 * as it's usable with periodic OA or CS sampling.
+		 */
+		if (!require_cs_mode &&
+		    !(props->sample_flags & SAMPLE_CTX_ID)) {
 			DRM_ERROR(
 				"Ring given without requesting any CS data to sample");
 			ret = -EINVAL;
@@ -1425,6 +1454,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 		}
 
 		stream->cs_mode = true;
+
+		if (props->sample_flags & SAMPLE_PID) {
+			stream->sample_flags |= SAMPLE_PID;
+			stream->sample_size += 4;
+		}
 
 		ret = alloc_command_stream_buf(dev_priv);
 		if (ret)
@@ -2044,6 +2078,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 			break;
 		case DRM_I915_PERF_SAMPLE_CTX_ID_PROP:
 			props->sample_flags |= SAMPLE_CTX_ID;
+			break;
+		case DRM_I915_PERF_SAMPLE_PID_PROP:
+			props->sample_flags |= SAMPLE_PID;
 			break;
 		case DRM_I915_PERF_PROP_MAX:
 			BUG();
