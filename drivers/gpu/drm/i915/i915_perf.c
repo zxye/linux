@@ -57,6 +57,7 @@ struct oa_sample_data
 {
 	u32 source;
 	u32 ctx_id;
+	u32 pid;
 	const u8 *report;
 };
 
@@ -226,6 +227,7 @@ void i915_oa_emit_report(struct drm_i915_gem_request *req,
 	}
 
 	entry->ctx_id = ctx->global_id;
+	entry->pid = current->pid;
 	i915_gem_request_assign(&entry->request, req);
 
 	spin_lock(&dev_priv->perf.oa.node_list_lock);
@@ -381,6 +383,9 @@ static bool append_oa_sample(struct i915_perf_event *event,
 	if (sample_flags & I915_PERF_SAMPLE_CTXID)
 		header.size += 4;
 
+	if (sample_flags & I915_PERF_SAMPLE_PID)
+		header.size += 4;
+
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
 		header.size += report_size;
 
@@ -400,6 +405,12 @@ static bool append_oa_sample(struct i915_perf_event *event,
 
 	if (sample_flags & I915_PERF_SAMPLE_CTXID) {
 		if (copy_to_user(read_state->buf, &data->ctx_id, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_PID) {
+		if (copy_to_user(read_state->buf, &data->pid, 4))
 			return false;
 		read_state->buf += 4;
 	}
@@ -444,6 +455,10 @@ static bool append_oa_buffer_sample(struct i915_perf_event *event,
 #warning "FIXME: append_oa_buffer_sample: read ctx ID from report and map that to an intel_context::global_id"
 	if (sample_flags & I915_PERF_SAMPLE_CTXID)
 		data.ctx_id = 0;
+
+#warning "FIXME: append_oa_buffer_sample: deduce pid for periodic samples based on most recent RCS pid for ctx"
+	if (sample_flags & I915_PERF_SAMPLE_PID)
+		data.pid = 0;
 
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
 		data.report = report;
@@ -677,6 +692,9 @@ static bool append_oa_rcs_sample(struct i915_perf_event *event,
 
 	if (sample_flags & I915_PERF_SAMPLE_CTXID)
 		data.ctx_id = node->ctx_id;
+
+	if (sample_flags & I915_PERF_SAMPLE_PID)
+		data.pid = node->pid;
 
 	if (sample_flags & I915_PERF_SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1366,8 +1384,9 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 		return -EINVAL;
 	}
 
-	if (IS_HASWELL(dev_priv->dev) &&
-	    (param->sample_flags & I915_PERF_SAMPLE_CTXID)) {
+	if ((IS_HASWELL(dev_priv->dev) &&
+	     (param->sample_flags & I915_PERF_SAMPLE_CTXID)) ||
+	    (param->sample_flags & I915_PERF_SAMPLE_PID)) {
 		dev_priv->perf.oa.oa_rcs_buffer.format_size = format_size;
 		dev_priv->perf.oa.oa_rcs_buffer.format =
 			dev_priv->perf.oa.oa_buffer.format;
@@ -1831,7 +1850,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 
 	known_sample_flags = I915_PERF_SAMPLE_OA_REPORT |
 			     I915_PERF_SAMPLE_SOURCE_INFO |
-			     I915_PERF_SAMPLE_CTXID;
+			     I915_PERF_SAMPLE_CTXID |
+			     I915_PERF_SAMPLE_PID;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;
