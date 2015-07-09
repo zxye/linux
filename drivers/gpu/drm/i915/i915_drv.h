@@ -1855,6 +1855,7 @@ struct i915_perf_cs_data_node {
 	struct drm_i915_gem_request *request;
 	u32 offset;
 	u32 ctx_id;
+	u32 pid;
 };
 
 struct drm_i915_private {
@@ -2176,6 +2177,7 @@ struct drm_i915_private {
 		} command_stream_buf;
 
 		u32 last_ctx_id;
+		u32 last_pid;
 		struct list_head node_list;
 		spinlock_t node_list_lock;
 	} perf;
