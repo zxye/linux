@@ -14,6 +14,7 @@
 #define TS_DATA_SIZE sizeof(struct drm_i915_ts_data)
 #define CTX_INFO_SIZE sizeof(struct drm_i915_ts_node_ctx_id)
 #define RING_INFO_SIZE sizeof(struct drm_i915_ts_node_ring_id)
+#define PID_INFO_SIZE sizeof(struct drm_i915_ts_node_pid)
 
 static u32 i915_oa_event_paranoid = true;
 
@@ -145,6 +146,8 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	entry->ctx_id = global_ctx_id;
 	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_RING)
 		entry->ring = ring_id_mask(ring);
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_PID)
+		entry->pid = current->pid;
 	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
 
 	spin_lock(&dev_priv->gen_pmu.lock);
@@ -551,10 +554,11 @@ static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 	u8 *snapshot, *current_ptr;
 	struct drm_i915_ts_node_ctx_id *ctx_info;
 	struct drm_i915_ts_node_ring_id *ring_info;
+	struct drm_i915_ts_node_pid *pid_info;
 	struct perf_raw_record raw;
 
 	BUILD_BUG_ON((TS_DATA_SIZE != 8) || (CTX_INFO_SIZE != 8) ||
-			(RING_INFO_SIZE != 8));
+			(RING_INFO_SIZE != 8) || (PID_INFO_SIZE != 8));
 
 	snapshot = dev_priv->gen_pmu.buffer.addr + node->offset;
 	snapshot_size = TS_DATA_SIZE + CTX_INFO_SIZE;
@@ -567,6 +571,13 @@ static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 		ring_info = (struct drm_i915_ts_node_ring_id *)current_ptr;
 		ring_info->ring = node->ring;
 		snapshot_size += RING_INFO_SIZE;
+		current_ptr = snapshot + snapshot_size;
+	}
+
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_PID) {
+		pid_info = (struct drm_i915_ts_node_pid *)current_ptr;
+		pid_info->pid = node->pid;
+		snapshot_size += PID_INFO_SIZE;
 		current_ptr = snapshot + snapshot_size;
 	}
 
@@ -1016,6 +1027,9 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 
 	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_RING)
 		node_size += RING_INFO_SIZE;
+
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_PID)
+		node_size += PID_INFO_SIZE;
 
 	/* size has to be aligned to 8 bytes */
 	node_size = ALIGN(node_size, 8);
@@ -1634,6 +1648,9 @@ static int i915_gen_event_init(struct perf_event *event)
 	if (gen_attr.sample_ring)
 		dev_priv->gen_pmu.sample_info_flags |=
 				I915_GEN_PMU_SAMPLE_RING;
+
+	if (gen_attr.sample_pid)
+		dev_priv->gen_pmu.sample_info_flags |= I915_GEN_PMU_SAMPLE_PID;
 
 	/* To avoid the complexity of having to accurately filter
 	 * data and marshal to the appropriate client

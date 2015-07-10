@@ -103,7 +103,8 @@ typedef struct _drm_i915_oa_attr {
 struct drm_i915_gen_pmu_attr {
 	__u32 size;
 	__u32 sample_ring:1,
-		__reserved_1:31;
+		sample_pid:1,
+		__reserved_1:30;
 };
 
 /* Header for PERF_RECORD_DEVICE type events */
@@ -160,6 +161,11 @@ struct drm_i915_ts_node_ctx_id {
 
 struct drm_i915_ts_node_ring_id {
 	__u32 ring;
+	__u32 pad;
+};
+
+struct drm_i915_ts_node_pid {
+	__u32 pid;
 	__u32 pad;
 };
 
