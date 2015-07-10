@@ -54,6 +54,9 @@ static u32 i915_perf_event_paranoid = true;
 
 #define I915_PERF_GEN_NODE_SIZE 8
 
+/* Returns the ring's ID mask (i.e. I915_EXEC_<ring>) */
+#define RING_ID_MASK(ring) ((ring)->id + 1)
+
 /* Data common to periodic and RCS based samples */
 struct oa_sample_data
 {
@@ -316,6 +319,7 @@ void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	entry->ctx_id = ctx->global_id;
 	entry->pid = current->pid;
 	entry->tag = tag;
+	entry->ring_id = RING_ID_MASK(ring);
 	i915_gem_request_assign(&entry->request, req);
 
 	spin_lock(&dev_priv->perf.gen.node_list_lock);
@@ -1578,8 +1582,9 @@ static int i915_oa_event_init(struct i915_perf_event *event,
 		return -EINVAL;
 	}
 
-	if (param->sample_flags & I915_PERF_SAMPLE_TIMESTAMP) {
-		DRM_ERROR("Timestamp sample type not supported for OA event\n");
+	if ((param->sample_flags & I915_PERF_SAMPLE_TIMESTAMP) ||
+		(param->sample_flags & I915_PERF_SAMPLE_RING_ID)) {
+		DRM_ERROR("Unsupported sample type for OA event\n");
 		return -EINVAL;
 	}
 
@@ -1729,6 +1734,9 @@ static bool append_gen_sample(struct i915_perf_event *event,
 	if (sample_flags & I915_PERF_SAMPLE_TAG)
 		header.size += 4;
 
+	if (sample_flags & I915_PERF_SAMPLE_RING_ID)
+		header.size += 4;
+
 	if (sample_flags & I915_PERF_SAMPLE_TIMESTAMP)
 		header.size += 8;
 
@@ -1754,6 +1762,12 @@ static bool append_gen_sample(struct i915_perf_event *event,
 
 	if (sample_flags & I915_PERF_SAMPLE_TAG) {
 		if (copy_to_user(read_state->buf, &node->tag, 4))
+			return false;
+		read_state->buf += 4;
+	}
+
+	if (sample_flags & I915_PERF_SAMPLE_RING_ID) {
+		if (copy_to_user(read_state->buf, &node->ring_id, 4))
 			return false;
 		read_state->buf += 4;
 	}
@@ -2340,7 +2354,8 @@ int i915_perf_open_ioctl_locked(struct drm_device *dev, void *data,
 			     I915_PERF_SAMPLE_CTXID |
 			     I915_PERF_SAMPLE_PID |
 			     I915_PERF_SAMPLE_TAG |
-			     I915_PERF_SAMPLE_TIMESTAMP;
+			     I915_PERF_SAMPLE_TIMESTAMP |
+			     I915_PERF_SAMPLE_RING_ID;
 	if (param->sample_flags & ~known_sample_flags) {
 		DRM_ERROR("Unknown drm_i915_perf_open_param sample_flag\n");
 		ret = -EINVAL;

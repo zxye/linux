@@ -1227,6 +1227,7 @@ struct drm_i915_perf_oa_attr {
 #define I915_PERF_SAMPLE_PID		(1<<3)
 #define I915_PERF_SAMPLE_TAG		(1<<4)
 #define I915_PERF_SAMPLE_TIMESTAMP	(1<<5)
+#define I915_PERF_SAMPLE_RING_ID	(1<<6)
 
 struct drm_i915_perf_open_param {
 	/* Such as I915_PERF_OA_EVENT */
@@ -1268,6 +1269,7 @@ enum drm_i915_perf_record_type {
 	 *     { u32 ctx_id; }      && I915_PERF_SAMPLE_CTXID
 	 *     { u32 pid; }	    && I915_PERF_SAMPLE_PID
 	 *     { u32 tag; }	    && I915_PERF_SAMPLE_TAG
+	 *     { u32 ring_id; }	    && I915_PERF_SAMPLE_RING_ID
 	 *     { u64 timestamp; }   && I915_PERF_SAMPLE_TIMESTAMP
 	 *     { u32 oa_report[]; } && I915_PERF_SAMPLE_OA_REPORT
 	 *

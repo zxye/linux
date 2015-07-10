@@ -1724,6 +1724,7 @@ struct i915_gen_data_node {
 	u32 ctx_id;
 	u32 pid;
 	u32 tag;
+	u32 ring_id;
 };
 
 struct drm_i915_private {
