@@ -1616,6 +1616,7 @@ struct i915_gen_pmu_node {
 	u32 offset;
 	bool discard;
 	u32 ctx_id;
+	u32 ring;
 };
 
 extern const struct i915_oa_reg i915_oa_3d_mux_config_hsw[];
@@ -1974,6 +1975,8 @@ struct drm_i915_private {
 		struct list_head node_list;
 		struct work_struct forward_work;
 		struct work_struct event_destroy_work;
+#define I915_GEN_PMU_SAMPLE_RING		(1<<0)
+		int sample_info_flags;
 	} gen_pmu;
 
 	void (*emit_profiling_data[I915_PROFILE_MAX])

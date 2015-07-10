@@ -13,6 +13,7 @@
 
 #define TS_DATA_SIZE sizeof(struct drm_i915_ts_data)
 #define CTX_INFO_SIZE sizeof(struct drm_i915_ts_node_ctx_id)
+#define RING_INFO_SIZE sizeof(struct drm_i915_ts_node_ring_id)
 
 static u32 i915_oa_event_paranoid = true;
 
@@ -113,6 +114,9 @@ static void i915_oa_emit_perf_report(struct drm_i915_gem_request *req,
 	i915_vma_move_to_active(dev_priv->oa_pmu.oa_rcs_buffer.vma, ring);
 }
 
+/* Returns the ring's ID mask (i.e. I915_EXEC_<ring>) */
+#define ring_id_mask(ring) ((ring)->id + 1)
+
 /*
  * Emits the commands to capture timestamps, into the CS
  */
@@ -139,6 +143,8 @@ static void i915_gen_emit_ts_data(struct drm_i915_gem_request *req,
 	}
 
 	entry->ctx_id = global_ctx_id;
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_RING)
+		entry->ring = ring_id_mask(ring);
 	i915_gem_request_assign(&entry->req, ring->outstanding_lazy_request);
 
 	spin_lock(&dev_priv->gen_pmu.lock);
@@ -542,18 +548,27 @@ static void forward_one_gen_pmu_sample(struct drm_i915_private *dev_priv,
 	struct perf_sample_data data;
 	struct perf_event *event = dev_priv->gen_pmu.exclusive_event;
 	int snapshot_size;
-	u8 *snapshot;
+	u8 *snapshot, *current_ptr;
 	struct drm_i915_ts_node_ctx_id *ctx_info;
+	struct drm_i915_ts_node_ring_id *ring_info;
 	struct perf_raw_record raw;
 
-	BUILD_BUG_ON(TS_DATA_SIZE != 8);
-	BUILD_BUG_ON(CTX_INFO_SIZE != 8);
+	BUILD_BUG_ON((TS_DATA_SIZE != 8) || (CTX_INFO_SIZE != 8) ||
+			(RING_INFO_SIZE != 8));
 
 	snapshot = dev_priv->gen_pmu.buffer.addr + node->offset;
 	snapshot_size = TS_DATA_SIZE + CTX_INFO_SIZE;
 
 	ctx_info = (struct drm_i915_ts_node_ctx_id *)(snapshot + TS_DATA_SIZE);
 	ctx_info->ctx_id = node->ctx_id;
+	current_ptr = snapshot + snapshot_size;
+
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_RING) {
+		ring_info = (struct drm_i915_ts_node_ring_id *)current_ptr;
+		ring_info->ring = node->ring;
+		snapshot_size += RING_INFO_SIZE;
+		current_ptr = snapshot + snapshot_size;
+	}
 
 	/* Note: the raw sample consists of a u32 size member and raw data. The
 	 * combined size of these two fields is required to be 8 byte aligned.
@@ -998,6 +1013,9 @@ static int init_gen_pmu_buffer(struct perf_event *event)
 	INIT_LIST_HEAD(&dev_priv->gen_pmu.node_list);
 
 	node_size = TS_DATA_SIZE + CTX_INFO_SIZE;
+
+	if (dev_priv->gen_pmu.sample_info_flags & I915_GEN_PMU_SAMPLE_RING)
+		node_size += RING_INFO_SIZE;
 
 	/* size has to be aligned to 8 bytes */
 	node_size = ALIGN(node_size, 8);
@@ -1533,15 +1551,89 @@ static int i915_oa_event_event_idx(struct perf_event *event)
 	return 0;
 }
 
+static int i915_gen_pmu_copy_attr(struct drm_i915_gen_pmu_attr __user *uattr,
+			     struct drm_i915_gen_pmu_attr *attr)
+{
+	u32 size;
+	int ret;
+
+	if (!access_ok(VERIFY_WRITE, uattr, I915_GEN_PMU_ATTR_SIZE_VER0))
+		return -EFAULT;
+
+	/*
+	 * zero the full structure, so that a short copy will be nice.
+	 */
+	memset(attr, 0, sizeof(*attr));
+
+	ret = get_user(size, &uattr->size);
+	if (ret)
+		return ret;
+
+	if (size > PAGE_SIZE)	/* silly large */
+		goto err_size;
+
+	if (size < I915_GEN_PMU_ATTR_SIZE_VER0)
+		goto err_size;
+
+	/*
+	 * If we're handed a bigger struct than we know of,
+	 * ensure all the unknown bits are 0 - i.e. new
+	 * user-space does not rely on any kernel feature
+	 * extensions we dont know about yet.
+	 */
+	if (size > sizeof(*attr)) {
+		unsigned char __user *addr;
+		unsigned char __user *end;
+		unsigned char val;
+
+		addr = (void __user *)uattr + sizeof(*attr);
+		end  = (void __user *)uattr + size;
+
+		for (; addr < end; addr++) {
+			ret = get_user(val, addr);
+			if (ret)
+				return ret;
+			if (val)
+				goto err_size;
+		}
+		size = sizeof(*attr);
+	}
+
+	ret = copy_from_user(attr, uattr, size);
+	if (ret)
+		return -EFAULT;
+
+out:
+	return ret;
+
+err_size:
+	put_user(sizeof(*attr), &uattr->size);
+	ret = -E2BIG;
+	goto out;
+}
+
 static int i915_gen_event_init(struct perf_event *event)
 {
 	struct drm_i915_private *dev_priv =
 		container_of(event->pmu, typeof(*dev_priv), gen_pmu.pmu);
+	struct drm_i915_gen_pmu_attr gen_attr;
 	unsigned long lock_flags;
 	int ret = 0;
 
 	if (event->attr.type != event->pmu->type)
 		return -ENOENT;
+
+	BUILD_BUG_ON(sizeof(struct drm_i915_gen_pmu_attr) !=
+			I915_GEN_PMU_ATTR_SIZE_VER0);
+
+	ret = i915_gen_pmu_copy_attr(to_user_ptr(event->attr.config),
+				&gen_attr);
+	if (ret)
+		return ret;
+
+	if (gen_attr.sample_ring)
+		dev_priv->gen_pmu.sample_info_flags |=
+				I915_GEN_PMU_SAMPLE_RING;
 
 	/* To avoid the complexity of having to accurately filter
 	 * data and marshal to the appropriate client

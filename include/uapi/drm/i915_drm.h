@@ -81,6 +81,8 @@
 
 #define I915_OA_ATTR_SIZE_VER0		32  /* sizeof first published struct */
 
+#define I915_GEN_PMU_ATTR_SIZE_VER0	8  /* sizeof first published struct */
+
 typedef struct _drm_i915_oa_attr {
 	__u32 size;
 
@@ -97,6 +99,12 @@ typedef struct _drm_i915_oa_attr {
 		sample_tag:1,
 		__reserved_1:60;
 } drm_i915_oa_attr_t;
+
+struct drm_i915_gen_pmu_attr {
+	__u32 size;
+	__u32 sample_ring:1,
+		__reserved_1:31;
+};
 
 /* Header for PERF_RECORD_DEVICE type events */
 typedef struct _drm_i915_oa_event_header {
@@ -147,6 +155,11 @@ struct drm_i915_ts_data {
 
 struct drm_i915_ts_node_ctx_id {
 	__u32 ctx_id;
+	__u32 pad;
+};
+
+struct drm_i915_ts_node_ring_id {
+	__u32 ring;
 	__u32 pad;
 };
 
