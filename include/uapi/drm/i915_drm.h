@@ -104,7 +104,8 @@ struct drm_i915_gen_pmu_attr {
 	__u32 size;
 	__u32 sample_ring:1,
 		sample_pid:1,
-		__reserved_1:30;
+		sample_tag:1,
+		__reserved_1:29;
 };
 
 /* Header for PERF_RECORD_DEVICE type events */
@@ -166,6 +167,11 @@ struct drm_i915_ts_node_ring_id {
 
 struct drm_i915_ts_node_pid {
 	__u32 pid;
+	__u32 pad;
+};
+
+struct drm_i915_ts_node_tag {
+	__u32 tag;
 	__u32 pad;
 };
 
