@@ -263,6 +263,18 @@ __create_hw_context(struct drm_device *dev,
 
 	ctx->file_priv = file_priv;
 	ctx->user_handle = ret;
+
+	/* TODO: If required, this global id can be used for programming the hw
+	 * fields too. In that case, we'll have take care of hw restrictions
+	 * while allocating idr. e.g. for some hw, we may not have full 32 bits
+	 * available.
+	 */
+	ret = idr_alloc_cyclic(&dev_priv->global_ctx_idr,
+				ctx, 0, 0, GFP_KERNEL);
+	if (ret < 0)
+		goto err_out;
+
+	ctx->global_id = ret;
 	/* NB: Mark all slices as needing a remap so that when the context first
 	 * loads it will restore whatever remap state already exists. If there
 	 * is no remap info, it will be a NOP. */
@@ -287,6 +299,7 @@ i915_gem_create_context(struct drm_device *dev,
 			struct drm_i915_file_private *file_priv)
 {
 	const bool is_global_default_ctx = file_priv == NULL;
+	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_context *ctx;
 	int ret = 0;
 
@@ -333,6 +346,7 @@ err_unpin:
 		i915_gem_object_ggtt_unpin(ctx->legacy_hw_ctx.rcs_state);
 err_destroy:
 	idr_remove(&file_priv->context_idr, ctx->user_handle);
+	idr_remove(&dev_priv->global_ctx_idr, ctx->global_id);
 	i915_gem_context_unreference(ctx);
 	return ERR_PTR(ret);
 }
@@ -403,6 +417,7 @@ int i915_gem_context_init(struct drm_device *dev)
 			dev_priv->hw_context_size = 0;
 		}
 	}
+	idr_init(&dev_priv->global_ctx_idr);
 
 	ctx = i915_gem_create_context(dev, NULL);
 	if (IS_ERR(ctx)) {
@@ -424,6 +439,8 @@ void i915_gem_context_fini(struct drm_device *dev)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_context *dctx = dev_priv->kernel_context;
 	int i;
+
+	idr_destroy(&dev_priv->global_ctx_idr);
 
 	if (dctx->legacy_hw_ctx.rcs_state) {
 		/* The only known way to stop the gpu from accessing the hw context is
@@ -479,6 +496,8 @@ int i915_gem_context_enable(struct drm_i915_gem_request *req)
 static int context_idr_cleanup(int id, void *p, void *data)
 {
 	struct intel_context *ctx = p;
+
+	idr_remove(&ctx->i915->global_ctx_idr, ctx->global_id);
 
 	i915_gem_context_unreference(ctx);
 	return 0;
@@ -904,6 +923,7 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
 {
 	struct drm_i915_gem_context_destroy *args = data;
 	struct drm_i915_file_private *file_priv = file->driver_priv;
+	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_context *ctx;
 	int ret;
 
@@ -924,6 +944,7 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
 	}
 
 	idr_remove(&ctx->file_priv->context_idr, ctx->user_handle);
+	idr_remove(&dev_priv->global_ctx_idr, ctx->global_id);
 	i915_gem_context_unreference(ctx);
 	mutex_unlock(&dev->struct_mutex);
 
