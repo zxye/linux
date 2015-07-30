@@ -802,6 +802,7 @@ struct i915_ctx_hang_stats {
 struct intel_context {
 	struct kref ref;
 	int user_handle;
+	int global_id;
 	uint8_t remap_slice;
 	struct drm_i915_file_private *file_priv;
 	struct i915_ctx_hang_stats hang_stats;
@@ -1700,6 +1701,8 @@ struct drm_i915_private {
 	struct intel_vbt_data vbt;
 
 	bool preserve_bios_swizzle;
+
+	struct idr global_ctx_idr;
 
 	/* overlay */
 	struct intel_overlay *overlay;
