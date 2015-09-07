@@ -84,7 +84,7 @@ int intel_execlists_submission(struct drm_device *dev, struct drm_file *file,
 			       struct list_head *vmas,
 			       struct drm_i915_gem_object *batch_obj,
 			       u64 exec_start, u32 dispatch_flags);
-u32 intel_execlists_ctx_id(struct drm_i915_gem_object *ctx_obj);
+u32 intel_execlists_ctx_id(struct intel_context *ctx);
 
 void intel_lrc_irq_handler(struct intel_engine_cs *ring);
 void intel_execlists_retire_requests(struct intel_engine_cs *ring);

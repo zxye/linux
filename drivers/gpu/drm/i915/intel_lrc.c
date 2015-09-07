@@ -244,7 +244,7 @@ int intel_sanitize_enable_execlists(struct drm_device *dev, int enable_execlists
 
 /**
  * intel_execlists_ctx_id() - get the Execlists Context ID
- * @ctx_obj: Logical Ring Context backing object.
+ * @ctx: LR context
  *
  * Do not confuse with ctx->id! Unfortunately we have a name overload
  * here: the old context ID we pass to userspace as a handler so that
@@ -253,20 +253,22 @@ int intel_sanitize_enable_execlists(struct drm_device *dev, int enable_execlists
  * interrupts.
  *
  * Return: 20-bits globally unique context ID.
+ *
+ * Further the ID given to HW can now be relied on to be constant for
+ * the lifetime of the context, unlike previously when we used an
+ * associated logical ring context address (which could be repinned at
+ * a different address).
  */
-u32 intel_execlists_ctx_id(struct drm_i915_gem_object *ctx_obj)
+u32 intel_execlists_ctx_id(struct intel_context *ctx)
 {
-	u32 lrca = i915_gem_obj_ggtt_offset(ctx_obj);
-
-	/* LRCA is required to be 4K aligned so the more significant 20 bits
-	 * are globally unique */
-	return lrca >> 12;
+	return ctx->global_id;
 }
 
 static uint64_t execlists_ctx_descriptor(struct intel_engine_cs *ring,
-					 struct drm_i915_gem_object *ctx_obj)
+					 struct intel_context *ctx)
 {
 	struct drm_device *dev = ring->dev;
+	struct drm_i915_gem_object *ctx_obj = ctx->engine[ring->id].state;
 	uint64_t desc;
 	uint64_t lrca = i915_gem_obj_ggtt_offset(ctx_obj);
 
@@ -278,7 +280,7 @@ static uint64_t execlists_ctx_descriptor(struct intel_engine_cs *ring,
 		desc |= GEN8_CTX_L3LLC_COHERENT;
 	desc |= GEN8_CTX_PRIVILEGE;
 	desc |= lrca;
-	desc |= (u64)intel_execlists_ctx_id(ctx_obj) << GEN8_CTX_ID_SHIFT;
+	desc |= (u64)intel_execlists_ctx_id(ctx) << GEN8_CTX_ID_SHIFT;
 
 	/* TODO: WaDisableLiteRestore when we start using semaphore
 	 * signalling between Command Streamers */
@@ -295,8 +297,8 @@ static uint64_t execlists_ctx_descriptor(struct intel_engine_cs *ring,
 }
 
 static void execlists_elsp_write(struct intel_engine_cs *ring,
-				 struct drm_i915_gem_object *ctx_obj0,
-				 struct drm_i915_gem_object *ctx_obj1)
+				 struct intel_context *ctx0,
+				 struct intel_context *ctx1)
 {
 	struct drm_device *dev = ring->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
@@ -304,14 +306,14 @@ static void execlists_elsp_write(struct intel_engine_cs *ring,
 	uint32_t desc[4];
 
 	/* XXX: You must always write both descriptors in the order below. */
-	if (ctx_obj1)
-		temp = execlists_ctx_descriptor(ring, ctx_obj1);
+	if (ctx1)
+		temp = execlists_ctx_descriptor(ring, ctx1);
 	else
 		temp = 0;
 	desc[1] = (u32)(temp >> 32);
 	desc[0] = (u32)temp;
 
-	temp = execlists_ctx_descriptor(ring, ctx_obj0);
+	temp = execlists_ctx_descriptor(ring, ctx0);
 	desc[3] = (u32)(temp >> 32);
 	desc[2] = (u32)temp;
 
@@ -330,11 +332,14 @@ static void execlists_elsp_write(struct intel_engine_cs *ring,
 	spin_unlock(&dev_priv->uncore.lock);
 }
 
-static int execlists_update_context(struct drm_i915_gem_object *ctx_obj,
-				    struct drm_i915_gem_object *ring_obj,
-				    struct i915_hw_ppgtt *ppgtt,
+static int execlists_update_context(struct intel_engine_cs *ring,
+				    struct intel_context *ctx,
 				    u32 tail)
 {
+	struct drm_i915_gem_object *ctx_obj = ctx->engine[ring->id].state;
+	struct intel_ringbuffer *ringbuf0 = ctx->engine[ring->id].ringbuf;
+	struct drm_i915_gem_object *ring_obj = ringbuf0->obj;
+	struct i915_hw_ppgtt *ppgtt = ctx->ppgtt;
 	struct page *page;
 	uint32_t *reg_state;
 
@@ -372,7 +377,7 @@ static void execlists_submit_contexts(struct intel_engine_cs *ring,
 	WARN_ON(!i915_gem_obj_is_pinned(ctx_obj0));
 	WARN_ON(!i915_gem_obj_is_pinned(ringbuf0->obj));
 
-	execlists_update_context(ctx_obj0, ringbuf0->obj, to0->ppgtt, tail0);
+	execlists_update_context(ring, to0, tail0);
 
 	if (to1) {
 		ringbuf1 = to1->engine[ring->id].ringbuf;
@@ -381,10 +386,10 @@ static void execlists_submit_contexts(struct intel_engine_cs *ring,
 		WARN_ON(!i915_gem_obj_is_pinned(ctx_obj1));
 		WARN_ON(!i915_gem_obj_is_pinned(ringbuf1->obj));
 
-		execlists_update_context(ctx_obj1, ringbuf1->obj, to1->ppgtt, tail1);
+		execlists_update_context(ring, to1, tail1);
 	}
 
-	execlists_elsp_write(ring, ctx_obj0, ctx_obj1);
+	execlists_elsp_write(ring, to0, to1);
 }
 
 static void execlists_context_unqueue(struct intel_engine_cs *ring)
@@ -465,9 +470,7 @@ static bool execlists_check_remove_request(struct intel_engine_cs *ring,
 					    execlist_link);
 
 	if (head_req != NULL) {
-		struct drm_i915_gem_object *ctx_obj =
-				head_req->ctx->engine[ring->id].state;
-		if (intel_execlists_ctx_id(ctx_obj) == request_id) {
+		if (intel_execlists_ctx_id(head_req->ctx) == request_id) {
 			WARN(head_req->elsp_submitted == 0,
 			     "Never submitted head request\n");
 
