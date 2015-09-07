@@ -2050,7 +2050,7 @@ static void i915_dump_lrc_obj(struct seq_file *m,
 	}
 
 	seq_printf(m, "CONTEXT: %s %u\n", engine->name,
-		   intel_execlists_ctx_id(ctx, engine));
+		   intel_execlists_ctx_id(ctx));
 
 	if (!i915_gem_obj_ggtt_bound(ctx_obj))
 		seq_puts(m, "\tNot bound in GGTT\n");
@@ -2171,7 +2171,7 @@ static int i915_execlists(struct seq_file *m, void *data)
 		seq_printf(m, "\t%d requests in queue\n", count);
 		if (head_req) {
 			seq_printf(m, "\tHead request id: %u\n",
-				   intel_execlists_ctx_id(head_req->ctx, engine));
+				   intel_execlists_ctx_id(head_req->ctx));
 			seq_printf(m, "\tHead request tail: %u\n",
 				   head_req->tail);
 		}

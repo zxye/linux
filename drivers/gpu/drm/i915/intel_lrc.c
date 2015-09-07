@@ -307,21 +307,23 @@ logical_ring_init_platform_invariants(struct intel_engine_cs *engine)
  * This is what a descriptor looks like, from LSB to MSB:
  *    bits 0-11:    flags, GEN8_CTX_* (cached in ctx_desc_template)
  *    bits 12-31:    LRCA, GTT address of (the HWSP of) this context
- *    bits 32-51:    ctx ID, a globally unique tag (the LRCA again!)
+ *    bits 32-51:    ctx ID, a globally unique tag (ctx->global_id)
  *    bits 52-63:    reserved, may encode the engine ID (for GuC)
  */
 static void
 intel_lr_context_descriptor_update(struct intel_context *ctx,
 				   struct intel_engine_cs *engine)
 {
-	uint64_t lrca, desc;
+	uint64_t lrca, id, desc;
 
 	lrca = ctx->engine[engine->id].lrc_vma->node.start +
 	       LRC_PPHWSP_PN * PAGE_SIZE;
 
-	desc = engine->ctx_desc_template;			   /* bits  0-11 */
-	desc |= lrca;					   /* bits 12-31 */
-	desc |= (lrca >> PAGE_SHIFT) << GEN8_CTX_ID_SHIFT; /* bits 32-51 */
+	id = ctx->global_id;
+
+	desc = engine->ctx_desc_template;   /* bits  0-11 */
+	desc |= lrca;			    /* bits 12-31 */
+	desc |= id << GEN8_CTX_ID_SHIFT;    /* bits 32-51 */
 
 	ctx->engine[engine->id].lrc_desc = desc;
 }
@@ -335,7 +337,6 @@ uint64_t intel_lr_context_descriptor(struct intel_context *ctx,
 /**
  * intel_execlists_ctx_id() - get the Execlists Context ID
  * @ctx: Context to get the ID for
- * @ring: Engine to get the ID for
  *
  * Do not confuse with ctx->id! Unfortunately we have a name overload
  * here: the old context ID we pass to userspace as a handler so that
@@ -343,15 +344,14 @@ uint64_t intel_lr_context_descriptor(struct intel_context *ctx,
  * ELSP so that the GPU can inform us of the context status via
  * interrupts.
  *
- * The context ID is a portion of the context descriptor, so we can
- * just extract the required part from the cached descriptor.
- *
- * Return: 20-bits globally unique context ID.
+ * Further the ID given to HW can now be relied on to be constant for
+ * the lifetime of the context, unlike previously when we used an
+ * associated logical ring context address (which could be repinned at
+ * a different address).
  */
-u32 intel_execlists_ctx_id(struct intel_context *ctx,
-			   struct intel_engine_cs *engine)
+u32 intel_execlists_ctx_id(struct intel_context *ctx)
 {
-	return intel_lr_context_descriptor(ctx, engine) >> GEN8_CTX_ID_SHIFT;
+	return ctx->global_id;
 }
 
 static void execlists_elsp_write(struct drm_i915_gem_request *rq0,
@@ -499,7 +499,7 @@ execlists_check_remove_request(struct intel_engine_cs *engine, u32 request_id)
 	if (!head_req)
 		return 0;
 
-	if (unlikely(intel_execlists_ctx_id(head_req->ctx, engine) != request_id))
+	if (unlikely(intel_execlists_ctx_id(head_req->ctx) != request_id))
 		return 0;
 
 	WARN(head_req->elsp_submitted == 0, "Never submitted head request\n");

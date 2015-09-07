@@ -114,8 +114,7 @@ void intel_lr_context_reset(struct drm_i915_private *dev_priv,
 uint64_t intel_lr_context_descriptor(struct intel_context *ctx,
 				     struct intel_engine_cs *engine);
 
-u32 intel_execlists_ctx_id(struct intel_context *ctx,
-			   struct intel_engine_cs *engine);
+u32 intel_execlists_ctx_id(struct intel_context *ctx);
 
 /* Execlists */
 int intel_sanitize_enable_execlists(struct drm_device *dev, int enable_execlists);
