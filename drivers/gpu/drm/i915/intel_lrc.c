@@ -319,7 +319,8 @@ intel_lr_context_descriptor_update(struct intel_context *ctx,
 
 	desc = ring->ctx_desc_template;			   /* bits  0-11 */
 	desc |= lrca;					   /* bits 12-31 */
-	desc |= (lrca >> PAGE_SHIFT) << GEN8_CTX_ID_SHIFT; /* bits 32-51 */
+	desc |= ((u64)intel_execlists_ctx_id(ctx) <<
+		 GEN8_CTX_ID_SHIFT);			   /* bits 32-51 */
 
 	ctx->engine[ring->id].lrc_desc = desc;
 }
@@ -332,24 +333,24 @@ uint64_t intel_lr_context_descriptor(struct intel_context *ctx,
 
 /**
  * intel_execlists_ctx_id() - get the Execlists Context ID
- * @ctx: Context to get the ID for
- * @ring: Engine to get the ID for
+ * @ctx: LR context
  *
  * Do not confuse with ctx->id! Unfortunately we have a name overload
  * here: the old context ID we pass to userspace as a handler so that
  * they can refer to a context, and the new context ID we pass to the
  * ELSP so that the GPU can inform us of the context status via
  * interrupts.
- *
- * The context ID is a portion of the context descriptor, so we can
- * just extract the required part from the cached descriptor.
+
+ * Further the ID given to HW can now be relied on to be constant for
+ * the lifetime of the context, unlike previously when we used an
+ * associated logical ring context address (which could be repinned at
+ * a different address).
  *
  * Return: 20-bits globally unique context ID.
  */
-u32 intel_execlists_ctx_id(struct intel_context *ctx,
-			   struct intel_engine_cs *ring)
+u32 intel_execlists_ctx_id(struct intel_context *ctx)
 {
-	return intel_lr_context_descriptor(ctx, ring) >> GEN8_CTX_ID_SHIFT;
+	return ctx->global_id;
 }
 
 static void execlists_elsp_write(struct drm_i915_gem_request *rq0,
@@ -492,7 +493,7 @@ static bool execlists_check_remove_request(struct intel_engine_cs *ring,
 					    execlist_link);
 
 	if (head_req != NULL) {
-		if (intel_execlists_ctx_id(head_req->ctx, ring) == request_id) {
+		if (intel_execlists_ctx_id(head_req->ctx) == request_id) {
 			WARN(head_req->elsp_submitted == 0,
 			     "Never submitted head request\n");
 
