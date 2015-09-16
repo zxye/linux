@@ -1740,6 +1740,11 @@ struct intel_wm_config {
 	bool sprites_scaled;
 };
 
+struct i915_oa_format {
+	u32 format;
+	int size;
+};
+
 struct i915_oa_reg {
 	i915_reg_t addr;
 	u32 value;
@@ -1760,11 +1765,6 @@ struct i915_perf_stream_ops {
 	 */
 	void (*disable)(struct i915_perf_stream *stream);
 
-	/* Return: true if any i915 perf records are ready to read()
-	 * for this stream.
-	 */
-	bool (*can_read)(struct i915_perf_stream *stream);
-
 	/* Call poll_wait, passing a wait queue that will be woken
 	 * once there is something ready to read() for the stream
 	 */
@@ -1774,9 +1774,7 @@ struct i915_perf_stream_ops {
 
 	/* For handling a blocking read, wait until there is something
 	 * to ready to read() for the stream. E.g. wait on the same
-	 * wait queue that would be passed to poll_wait() until
-	 * ->can_read() returns true (if its safe to call ->can_read()
-	 * without the i915 perf lock held).
+	 * wait queue that would be passed to poll_wait().
 	 */
 	int (*wait_unlocked)(struct i915_perf_stream *stream);
 
@@ -1816,11 +1814,28 @@ struct i915_perf_stream {
 	struct list_head link;
 
 	u32 sample_flags;
+	int sample_size;
 
 	struct i915_gem_context *ctx;
 	bool enabled;
 
-	struct i915_perf_stream_ops *ops;
+	const struct i915_perf_stream_ops *ops;
+};
+
+struct i915_oa_ops {
+	void (*init_oa_buffer)(struct drm_i915_private *dev_priv);
+	int (*enable_metric_set)(struct drm_i915_private *dev_priv);
+	void (*disable_metric_set)(struct drm_i915_private *dev_priv);
+	void (*oa_enable)(struct drm_i915_private *dev_priv);
+	void (*oa_disable)(struct drm_i915_private *dev_priv);
+	void (*update_oacontrol)(struct drm_i915_private *dev_priv);
+	void (*update_hw_ctx_id_locked)(struct drm_i915_private *dev_priv,
+					u32 ctx_id);
+	int (*read)(struct i915_perf_stream *stream,
+		    char __user *buf,
+		    size_t count,
+		    size_t *offset);
+	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
 };
 
 struct drm_i915_private {
@@ -2125,16 +2140,48 @@ struct drm_i915_private {
 
 	struct {
 		bool initialized;
+
 		struct mutex lock;
 		struct list_head streams;
 
+		spinlock_t hook_lock;
+
 		struct {
-			u32 metrics_set;
+			struct i915_perf_stream *exclusive_stream;
+
+			u32 specific_ctx_id;
+
+			struct hrtimer poll_check_timer;
+			wait_queue_head_t poll_wq;
+			atomic_t pollin;
+
+			bool periodic;
+			int period_exponent;
+			int timestamp_frequency;
+
+			int tail_margin;
+
+			int metrics_set;
 
 			const struct i915_oa_reg *mux_regs;
 			int mux_regs_len;
 			const struct i915_oa_reg *b_counter_regs;
 			int b_counter_regs_len;
+
+			struct {
+				struct drm_i915_gem_object *obj;
+				struct i915_vma *vma;
+				u32 gtt_offset;
+				u8 *addr;
+				int format;
+				int format_size;
+			} oa_buffer;
+
+			u32 gen7_latched_oastatus1;
+
+			struct i915_oa_ops ops;
+			const struct i915_oa_format *oa_formats;
+			int n_builtin_sets;
 		} oa;
 	} perf;
 
@@ -3499,6 +3546,9 @@ struct drm_i915_gem_object *
 i915_gem_alloc_context_obj(struct drm_device *dev, size_t size);
 struct i915_gem_context *
 i915_gem_context_create_gvt(struct drm_device *dev);
+int i915_gem_context_pin_legacy_rcs_state(struct drm_i915_private *dev_priv,
+					  struct i915_gem_context *ctx,
+					  u64 flags);
 
 static inline struct i915_gem_context *
 i915_gem_context_lookup(struct drm_i915_file_private *file_priv, u32 id)
@@ -3545,6 +3595,8 @@ int i915_gem_context_reset_stats_ioctl(struct drm_device *dev, void *data,
 
 int i915_perf_open_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file);
+void i915_oa_legacy_context_pin_notify(struct drm_i915_private *dev_priv,
+				       struct i915_gem_context *ctx);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct i915_address_space *vm,

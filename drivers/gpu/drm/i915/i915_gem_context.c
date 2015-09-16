@@ -134,6 +134,25 @@ static int get_context_size(struct drm_i915_private *dev_priv)
 	return ret;
 }
 
+int i915_gem_context_pin_legacy_rcs_state(struct drm_i915_private *dev_priv,
+					  struct i915_gem_context *ctx,
+					  u64 flags)
+{
+	int ret;
+
+	lockdep_assert_held(&ctx->i915->drm.struct_mutex);
+
+	ret = i915_vma_pin(ctx->engine[RCS].state, 0,
+			   ctx->ggtt_alignment,
+			   flags);
+	if (ret)
+		return ret;
+
+	i915_oa_legacy_context_pin_notify(dev_priv, ctx);
+
+	return 0;
+}
+
 void i915_gem_context_free(struct kref *ctx_ref)
 {
 	struct i915_gem_context *ctx = container_of(ctx_ref, typeof(*ctx), ref);
@@ -770,7 +789,8 @@ static int do_rcs_switch(struct drm_i915_gem_request *req)
 	}
 
 	/* Trying to pin first makes error handling easier. */
-	ret = i915_vma_pin(vma, 0, to->ggtt_alignment, PIN_GLOBAL);
+	ret = i915_gem_context_pin_legacy_rcs_state(engine->i915, to,
+						    PIN_GLOBAL);
 	if (ret)
 		return ret;
 

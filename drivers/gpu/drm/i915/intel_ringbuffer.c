@@ -2043,8 +2043,14 @@ static int intel_ring_context_pin(struct i915_gem_context *ctx,
 		if (ret)
 			goto error;
 
-		ret = i915_vma_pin(ce->state, 0, ctx->ggtt_alignment,
-				   PIN_GLOBAL | PIN_HIGH);
+		if (engine->id == RCS) {
+			u64 vma_flags = PIN_GLOBAL | PIN_HIGH;
+			ret = i915_gem_context_pin_legacy_rcs_state(engine->i915,
+								    ctx,
+								    vma_flags);
+		} else
+			ret = i915_vma_pin(ce->state, 0, ctx->ggtt_alignment,
+					   PIN_GLOBAL | PIN_HIGH);
 		if (ret)
 			goto error;
 	}
