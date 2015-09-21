@@ -1698,6 +1698,11 @@ struct i915_execbuffer_params {
 	struct drm_i915_gem_request     *request;
 };
 
+struct i915_oa_reg {
+	u32 addr;
+	u32 value;
+};
+
 struct i915_perf_read_state {
 	int count;
 	ssize_t read;
@@ -2006,6 +2011,15 @@ struct drm_i915_private {
 		bool initialized;
 		struct mutex lock;
 		struct list_head streams;
+
+		struct {
+			u32 metrics_set;
+
+			const struct i915_oa_reg *mux_regs;
+			int mux_regs_len;
+			const struct i915_oa_reg *b_counter_regs;
+			int b_counter_regs_len;
+		} oa;
 	} perf;
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
