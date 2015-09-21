@@ -1611,6 +1611,11 @@ struct i915_virtual_gpu {
 	bool active;
 };
 
+struct i915_oa_reg {
+	u32 addr;
+	u32 value;
+};
+
 struct i915_perf_read_state {
 	int count;
 	ssize_t read;
@@ -1936,7 +1941,20 @@ struct drm_i915_private {
 	struct {
 		bool initialized;
 		struct mutex lock;
+<<<<<<< HEAD
 		struct list_head streams;
+=======
+		struct list_head events;
+
+		struct {
+			u32 metrics_set;
+
+			const struct i915_oa_reg *mux_regs;
+			int mux_regs_len;
+			const struct i915_oa_reg *b_counter_regs;
+			int b_counter_regs_len;
+		} oa;
+>>>>>>> 5409552... drm/i915: Add static '3D' Haswell OA unit config
 	} perf;
 
 	/* Abstract the submission mechanism (legacy ringbuffer or execlists) away */
