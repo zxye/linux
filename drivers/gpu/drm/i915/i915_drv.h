@@ -2449,6 +2449,7 @@ struct drm_i915_private {
 			struct {
 				struct i915_vma *vma;
 				u8 *vaddr;
+				u32 last_ctx_id;
 				int format;
 				int format_size;
 
@@ -2518,6 +2519,14 @@ struct drm_i915_private {
 			} oa_buffer;
 
 			u32 gen7_latched_oastatus1;
+			u32 ctx_oactxctrl_off;
+			u32 ctx_flexeu0_off;
+
+			/* The RPT_ID/reason field for Gen8+ includes a bit
+			 * to determine if the CTX ID in the report is valid
+			 * but the specific bit differs between Gen 8 and 9
+			 */
+			u32 gen8_valid_ctx_bit;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
@@ -2829,6 +2838,8 @@ intel_info(const struct drm_i915_private *dev_priv)
 #define IS_KBL_ULX(dev_priv)	(INTEL_DEVID(dev_priv) == 0x590E || \
 				 INTEL_DEVID(dev_priv) == 0x5915 || \
 				 INTEL_DEVID(dev_priv) == 0x591E)
+#define IS_SKL_GT2(dev_priv)	(IS_SKYLAKE(dev_priv) && \
+				 (INTEL_DEVID(dev_priv) & 0x00F0) == 0x0010)
 #define IS_SKL_GT3(dev_priv)	(IS_SKYLAKE(dev_priv) && \
 				 (INTEL_DEVID(dev_priv) & 0x00F0) == 0x0020)
 #define IS_SKL_GT4(dev_priv)	(IS_SKYLAKE(dev_priv) && \
@@ -3576,6 +3587,9 @@ i915_gem_context_lookup_timeline(struct i915_gem_context *ctx,
 
 int i915_perf_open_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file);
+void i915_oa_update_reg_state(struct intel_engine_cs *engine,
+			      struct i915_gem_context *ctx,
+			      uint32_t *reg_state);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct i915_address_space *vm,

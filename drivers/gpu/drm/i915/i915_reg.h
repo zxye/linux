@@ -639,6 +639,12 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 
 #define GEN8_OACTXID _MMIO(0x2364)
 
+#define GEN8_OA_DEBUG _MMIO(0x2B04)
+#define  GEN9_OA_DEBUG_DISABLE_CLK_RATIO_REPORTS    (1<<5)
+#define  GEN9_OA_DEBUG_INCLUDE_CLK_RATIO	    (1<<6)
+#define  GEN9_OA_DEBUG_DISABLE_GO_1_0_REPORTS	    (1<<2)
+#define  GEN9_OA_DEBUG_DISABLE_CTX_SWITCH_REPORTS   (1<<1)
+
 #define GEN8_OACONTROL _MMIO(0x2B00)
 #define  GEN8_OA_REPORT_FORMAT_A12	    (0<<2)
 #define  GEN8_OA_REPORT_FORMAT_A12_B8_C8    (2<<2)
@@ -660,6 +666,7 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define  GEN7_OABUFFER_STOP_RESUME_ENABLE   (1<<1)
 #define  GEN7_OABUFFER_RESUME		    (1<<0)
 
+#define GEN8_OABUFFER_UDW _MMIO(0x23b4)
 #define GEN8_OABUFFER _MMIO(0x2b14)
 
 #define GEN7_OASTATUS1 _MMIO(0x2364)
@@ -678,7 +685,9 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define  GEN8_OASTATUS_REPORT_LOST	    (1<<0)
 
 #define GEN8_OAHEADPTR _MMIO(0x2B0C)
+#define GEN8_OAHEADPTR_MASK    0xffffffc0
 #define GEN8_OATAILPTR _MMIO(0x2B10)
+#define GEN8_OATAILPTR_MASK    0xffffffc0
 
 #define OABUFFER_SIZE_128K  (0<<3)
 #define OABUFFER_SIZE_256K  (1<<3)
