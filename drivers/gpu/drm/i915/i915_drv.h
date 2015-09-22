@@ -2031,6 +2031,11 @@ struct i915_oa_ops {
 	void (*oa_disable)(struct drm_i915_private *dev_priv);
 
 	/**
+	 * @legacy_ctx_switch_unlocked: hook for MI_SET_CONTEXT switches
+	 */
+	void (*legacy_ctx_switch_unlocked)(struct drm_i915_gem_request *req);
+
+	/**
 	 * @read: Copy data from the circular OA buffer into a given userspace
 	 * buffer.
 	 */
@@ -2397,6 +2402,7 @@ struct drm_i915_private {
 			struct {
 				struct i915_vma *vma;
 				u8 *vaddr;
+				u32 last_ctx_id;
 				int format;
 				int format_size;
 
@@ -2446,6 +2452,8 @@ struct drm_i915_private {
 			} oa_buffer;
 
 			u32 gen7_latched_oastatus1;
+			u32 ctx_oactxctrl_off;
+			u32 ctx_flexeu0_off;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
@@ -3512,6 +3520,10 @@ i915_gem_context_lookup_timeline(struct i915_gem_context *ctx,
 
 int i915_perf_open_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file);
+void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req);
+void i915_oa_update_reg_state(struct intel_engine_cs *engine,
+			      struct i915_gem_context *ctx,
+			      uint32_t *reg_state);
 
 /* i915_gem_evict.c */
 int __must_check i915_gem_evict_something(struct i915_address_space *vm,

@@ -196,6 +196,9 @@
 
 #include "i915_drv.h"
 #include "i915_oa_hsw.h"
+#include "i915_oa_bdw.h"
+#include "i915_oa_chv.h"
+#include "i915_oa_skl.h"
 
 /* HW requires this to be a power of two, between 128k and 16M, though driver
  * is currently generally designed assuming the largest 16M size is used such
@@ -292,6 +295,13 @@ static struct i915_oa_format hsw_oa_formats[I915_OA_FORMAT_MAX] = {
 	[I915_OA_FORMAT_C4_B8]	    = { 7, 64 },
 };
 
+static struct i915_oa_format gen8_plus_oa_formats[I915_OA_FORMAT_MAX] = {
+	[I915_OA_FORMAT_A12]		    = { 0, 64 },
+	[I915_OA_FORMAT_A12_B8_C8]	    = { 2, 128 },
+	[I915_OA_FORMAT_A32u40_A4u32_B8_C8] = { 5, 256 },
+	[I915_OA_FORMAT_C4_B8]		    = { 7, 64 },
+};
+
 #define SAMPLE_OA_REPORT      (1<<0)
 
 /**
@@ -320,6 +330,98 @@ struct perf_open_properties {
 	bool oa_periodic;
 	int oa_period_exponent;
 };
+
+/* NB: This is either called as part of a blocking read() or the poll check
+ * hrtimer (atomic ctx)
+ *
+ * This check code is central to providing a workaround for the OA unit
+ * tail pointer having a race with respect to what data is visible to the CPU.
+ * (See description of OA_TAIL_MARGIN_NSEC for further details.)
+ *
+ * Note: It's safe to read OA config state here unlocked, assuming that this is
+ * only called while the stream is enabled, while the global OA configuration
+ * can't be modified.
+ */
+static bool gen8_oa_buffer_check_unlocked(struct drm_i915_private *dev_priv)
+{
+	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
+	unsigned long flags;
+	bool ret = false;
+
+	/* We have to consider the (unlikely) possibility that read() errors
+	 * could result in an OA buffer reset which might reset the head,
+	 * tail and tail_timestamp.
+	 */
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	/* We throttle tail updates by successful reads, to ensure reads()
+	 * don't always start with a tail pointer that's too recent to trust
+	 * that the corresponding data is visible to the CPU yet.
+	 *
+	 * A successful read will reset tail which is our cue to update it...
+	 */
+	if (dev_priv->perf.oa.oa_buffer.tail == 0) {
+		u32 head = dev_priv->perf.oa.oa_buffer.head;
+		u32 tail = I915_READ(GEN8_OATAILPTR) & GEN8_OATAILPTR_MASK;
+
+		/* The tail pointer increases in 64 byte increments,
+		 * not in report_size steps...
+		 */
+		tail &= ~(report_size - 1);
+
+		/* At least wait until we have more that one report before
+		 * updating the tail since we won't update the tail again
+		 * until a successful read which wouldn't ever be possible
+		 * with less data.
+		 */
+		if (OA_TAKEN(tail, head) >= report_size) {
+			struct i915_vma *vma = dev_priv->perf.oa.oa_buffer.vma;
+			u32 gtt_offset = i915_ggtt_offset(vma);
+
+			if (tail >= gtt_offset &&
+			    tail < (gtt_offset + OA_BUFFER_SIZE)) {
+				u64 now = ktime_get_mono_fast_ns();
+
+				dev_priv->perf.oa.oa_buffer.tail = tail;
+				dev_priv->perf.oa.oa_buffer.tail_timestamp = now;
+
+				/* XXX: We don't optimistically report
+				 * available data in this case by returning
+				 * true and hope that OA_TAIL_MARGIN_NSEC
+				 * elapses before the actual read - experience
+				 * from trying this showed that it will usually
+				 * not be ready.
+				 *
+				 * Consider:
+				 * - It takes two hrtimer callbacks to first
+				 *   read a new tail pointer and then for that
+				 *   pointer to age so that we trust the
+				 *   corresponding data.
+				 * - Until userspace reads from an updated tail
+				 *   then we are blocked from updating the tail
+				 *   pointer.
+				 *
+				 * Given the above it takes 10 milliseconds
+				 * (2x hrtimer period) between POLLIN events
+				 * and reads. Potentially we could improve this
+				 * by double buffering the tail pointer.
+				 */
+			} else {
+				DRM_ERROR("Ignoring spurious out of range OA buffer tail pointer = %u\n",
+					  tail);
+			}
+		}
+	} else {
+		u64 now = ktime_get_mono_fast_ns();
+		u64 delta = now - dev_priv->perf.oa.oa_buffer.tail_timestamp;
+
+		ret = delta > OA_TAIL_MARGIN_NSEC;
+	}
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	return ret;
+}
 
 /* NB: This is either called as part of a blocking read() or the poll check
  * hrtimer (atomic ctx)
@@ -497,6 +599,268 @@ static int append_oa_sample(struct i915_perf_stream *stream,
 	(*offset) += header.size;
 
 	return 0;
+}
+
+/**
+ * Copies all buffered OA reports into userspace read() buffer.
+ * @stream: An i915-perf stream opened for OA metrics
+ * @buf: destination buffer given by userspace
+ * @count: the number of bytes userspace wants to read
+ * @offset: (inout): the current position for writing into @buf
+ *
+ * Notably any error condition resulting in a short read (-%ENOSPC or
+ * -%EFAULT) will be returned even though one or more records may
+ * have been successfully copied. In this case it's up to the caller
+ * to decide if the error should be squashed before returning to
+ * userspace.
+ *
+ * Note: reports are consumed from the head, and appended to the
+ * tail, so the tail chases the head?... If you think that's mad
+ * and back-to-front you're not alone, but this follows the
+ * Gen PRM naming convention.
+ *
+ * Returns: 0 on success, negative error code on failure.
+ */
+static int gen8_append_oa_reports(struct i915_perf_stream *stream,
+				  char __user *buf,
+				  size_t count,
+				  size_t *offset)
+{
+	struct drm_i915_private *dev_priv = stream->dev_priv;
+	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
+	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.vaddr;
+	u32 gtt_offset = i915_ggtt_offset(dev_priv->perf.oa.oa_buffer.vma);
+	u32 mask = (OA_BUFFER_SIZE - 1);
+	size_t start_offset = *offset;
+	u32 head;
+	unsigned long flags;
+	u32 tail;
+	u64 tail_timestamp;
+	u32 taken;
+	u64 now;
+	int ret = 0;
+
+	if (WARN_ON(!stream->enabled))
+		return -EIO;
+
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	head = dev_priv->perf.oa.oa_buffer.head;
+	tail = dev_priv->perf.oa.oa_buffer.tail;
+	tail_timestamp = dev_priv->perf.oa.oa_buffer.tail_timestamp;
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	/* A tail value of zero here means we're still waiting for the
+	 * oa_poll_check_timer_cb() hrtimer callback to give us a pointer
+	 */
+	if (tail == 0)
+		return -EAGAIN;
+
+	/* NB: oa_buffer.head/tail include the gtt_offset which we don't want
+	 * while indexing relative to oa_buf_base.
+	 */
+	head &= mask;
+	tail &= mask;
+
+	now = ktime_get_mono_fast_ns();
+	if ((now - tail_timestamp) < OA_TAIL_MARGIN_NSEC)
+		return -EAGAIN;
+
+	for (/* none */;
+	     (taken = OA_TAKEN(tail, head));
+	     head = (head + report_size) & mask) {
+		u8 *report = oa_buf_base + head;
+		u32 *report32 = (void *)report;
+		u32 ctx_id = report32[2];
+
+		/* All the report sizes factor neatly into the buffer
+		 * size so we never expect to see a report split
+		 * between the beginning and end of the buffer.
+		 *
+		 * Given the initial alignment check a misalignment
+		 * here would imply a driver bug that would result
+		 * in an overrun.
+		 */
+		if (WARN_ON((OA_BUFFER_SIZE - head) < report_size)) {
+			DRM_ERROR("Spurious OA head ptr: non-integral report offset\n");
+			break;
+		}
+
+		if (i915.enable_execlists) {
+			/* XXX: Just keep the lower 21 bits for now
+			 * since I'm not entirely sure if the HW
+			 * touches any of the higher bits in this
+			 * field
+			 */
+			ctx_id &= 0x1fffff;
+		}
+
+		/* Squash whatever is in the CTX_ID field if it's
+		 * marked as invalid to be sure we avoid
+		 * false-positive, single-context filtering below...
+		 */
+#define OAREPORT_CTX_ID_VALID (1<<25)
+		if (!(report32[0] & OAREPORT_CTX_ID_VALID))
+			ctx_id = report32[2] = 0xffffffff;
+
+		/* The reason field includes flags identifying what
+		 * triggered this specific report (mostly timer
+		 * triggered or e.g. due to a context switch).
+		 *
+		 * This field is never expected to be zero so we can
+		 * check that the report isn't invalid before copying
+		 * it to userspace...
+		 */
+		if (report32[0] == 0) {
+			DRM_NOTE("Skipping spurious, invalid OA report\n");
+			continue;
+		}
+
+		/* NB: For Gen 8 we handle per-context report filtering
+		 * ourselves instead of programming the OA unit with a
+		 * specific context id.
+		 *
+		 * NB: To allow userspace to calculate all counter
+		 * deltas for a specific context we have to send the
+		 * first report belonging to any subsequently
+		 * switched-too context. In this case we set the ID to
+		 * an invalid ID. It could be good to annotate these
+		 * reports with a _CTX_SWITCH_AWAY reason later.
+		 */
+		if (!dev_priv->perf.oa.exclusive_stream->ctx ||
+		    dev_priv->perf.oa.specific_ctx_id == ctx_id ||
+		    dev_priv->perf.oa.oa_buffer.last_ctx_id == ctx_id) {
+
+			/* Note: we don't check the reason field to
+			 * recognise context-switch reports because
+			 * it's possible that the first report after a
+			 * context switch is in fact periodic. We mark
+			 * the switch-away reports with an invalid
+			 * context id to be recognisable by userspace.
+			 */
+			if (dev_priv->perf.oa.exclusive_stream->ctx &&
+			    dev_priv->perf.oa.specific_ctx_id != ctx_id)
+				report32[2] = 0xffffffff;
+
+			ret = append_oa_sample(stream, buf, count, offset,
+					       report);
+			if (ret)
+				break;
+
+			dev_priv->perf.oa.oa_buffer.last_ctx_id = ctx_id;
+		}
+
+		/* The above reason field sanity check is based on
+		 * the assumption that the OA buffer is initially
+		 * zeroed and we reset the field after copying so the
+		 * check is still meaningful once old reports start
+		 * being overwritten.
+		 */
+		report32[0] = 0;
+	}
+
+	if (start_offset != *offset) {
+		spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+		/* We throttle tail updates based on reading to ensure we don't
+		 * end up starving userspace because the tail pointer is always
+		 * too recent for us to trust that the corresponding data is
+		 * visible to the CPU yet.
+		 *
+		 * This indicates to the hrtimer callback that we need a new
+		 * tail pointer to read from...
+		 */
+		dev_priv->perf.oa.oa_buffer.tail = 0;
+
+		/* We removed the gtt_offset for the copy loop above, indexing
+		 * relative to oa_buf_base so put back here...
+		 */
+		head += gtt_offset;
+
+		I915_WRITE(GEN8_OAHEADPTR, head & GEN8_OAHEADPTR_MASK);
+		dev_priv->perf.oa.oa_buffer.head = head;
+
+		spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+	}
+
+	return ret;
+}
+
+/**
+ * gen8_oa_read - copy status records then buffered OA reports
+ * @stream: An i915-perf stream opened for OA metrics
+ * @buf: destination buffer given by userspace
+ * @count: the number of bytes userspace wants to read
+ * @offset: (inout): the current position for writing into @buf
+ *
+ * Checks OA unit status registers and if necessary appends corresponding
+ * status records for userspace (such as for a buffer full condition) and then
+ * initiate appending any buffered OA reports.
+ *
+ * Updates @offset according to the number of bytes successfully copied into
+ * the userspace buffer.
+ *
+ * NB: some data may be successfully copied to the userspace buffer
+ * even if an error is returned, and this is reflected in the
+ * updated @read_state.
+ *
+ * Returns: zero on success or a negative error code
+ */
+static int gen8_oa_read(struct i915_perf_stream *stream,
+			char __user *buf,
+			size_t count,
+			size_t *offset)
+{
+	struct drm_i915_private *dev_priv = stream->dev_priv;
+	u32 oastatus;
+	int ret;
+
+	if (WARN_ON(!dev_priv->perf.oa.oa_buffer.vaddr))
+		return -EIO;
+
+	oastatus = I915_READ(GEN8_OASTATUS);
+
+	/* We treat OABUFFER_OVERFLOW as a significant error:
+	 *
+	 * Although theoretically we could handle this more gracefully
+	 * sometimes, some Gens don't correctly suppress certain
+	 * automatically triggered reports in this condition and so we
+	 * have to assume that old reports are now being trampled
+	 * over.
+	 *
+	 * Considering how we don't currently give userspace control
+	 * over the OA buffer size and always configure a large 16MB
+	 * buffer, then a buffer overflow does anyway likely indicate
+	 * that something has gone quite badly wrong.
+	 */
+	if (oastatus & GEN8_OASTATUS_OABUFFER_OVERFLOW) {
+		ret = append_oa_status(stream, buf, count, offset,
+				       DRM_I915_PERF_RECORD_OA_BUFFER_LOST);
+		if (ret)
+			return ret;
+
+		DRM_DEBUG("OA buffer overflow (exponent = %d): force restart\n",
+			  dev_priv->perf.oa.period_exponent);
+
+		dev_priv->perf.oa.ops.oa_disable(dev_priv);
+		dev_priv->perf.oa.ops.oa_enable(dev_priv);
+
+		/* Note: .oa_enable() is expected to re-init the oabuffer
+		 * and reset GEN8_OASTATUS for us */
+		oastatus = I915_READ(GEN8_OASTATUS);
+	}
+
+	if (oastatus & GEN8_OASTATUS_REPORT_LOST) {
+		ret = append_oa_status(stream, buf, count, offset,
+				       DRM_I915_PERF_RECORD_OA_REPORT_LOST);
+		if (ret == 0) {
+			I915_WRITE(GEN8_OASTATUS,
+				   oastatus & ~GEN8_OASTATUS_REPORT_LOST);
+		}
+	}
+
+	return gen8_append_oa_reports(stream, buf, count, offset);
 }
 
 /**
@@ -700,7 +1064,8 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 		if (ret)
 			return ret;
 
-		DRM_DEBUG("OA buffer overflow: force restart\n");
+		DRM_DEBUG("OA buffer overflow (exponent = %d): force restart\n",
+			  dev_priv->perf.oa.period_exponent);
 
 		dev_priv->perf.oa.ops.oa_disable(dev_priv);
 		dev_priv->perf.oa.ops.oa_enable(dev_priv);
@@ -800,33 +1165,37 @@ static int i915_oa_read(struct i915_perf_stream *stream,
 static int oa_get_render_ctx_id(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
-	struct intel_engine_cs *engine = dev_priv->engine[RCS];
-	int ret;
 
-	ret = i915_mutex_lock_interruptible(&dev_priv->drm);
-	if (ret)
-		return ret;
+	if (i915.enable_execlists)
+		dev_priv->perf.oa.specific_ctx_id = stream->ctx->hw_id;
+	else {
+		struct intel_engine_cs *engine = dev_priv->engine[RCS];
+		int ret;
 
-	/* As the ID is the gtt offset of the context's vma we pin
-	 * the vma to ensure the ID remains fixed.
-	 *
-	 * NB: implied RCS engine...
-	 */
-	ret = engine->context_pin(engine, stream->ctx);
-	if (ret)
-		goto unlock;
+		ret = i915_mutex_lock_interruptible(&dev_priv->drm);
+		if (ret)
+			return ret;
 
-	/* Explicitly track the ID (instead of calling i915_ggtt_offset()
-	 * on the fly) considering the difference with gen8+ and
-	 * execlists
-	 */
-	dev_priv->perf.oa.specific_ctx_id =
-		i915_ggtt_offset(stream->ctx->engine[engine->id].state);
+		/* As the ID is the gtt offset of the context's vma we pin
+		 * the vma to ensure the ID remains fixed.
+		 */
+		ret = engine->context_pin(engine, stream->ctx);
+		if (ret) {
+			mutex_unlock(&dev_priv->drm.struct_mutex);
+			return ret;
+		}
 
-unlock:
-	mutex_unlock(&dev_priv->drm.struct_mutex);
+		/* Explicitly track the ID (instead of calling
+		 * i915_ggtt_offset() on the fly) considering the difference
+		 * with gen8+ and execlists
+		 */
+		dev_priv->perf.oa.specific_ctx_id =
+			i915_ggtt_offset(stream->ctx->engine[engine->id].state);
 
-	return ret;
+		mutex_unlock(&dev_priv->drm.struct_mutex);
+	}
+
+	return 0;
 }
 
 /**
@@ -918,6 +1287,55 @@ static void gen7_init_oa_buffer(struct drm_i915_private *dev_priv)
 	 * The reason we clear the buffer for each re-init is for the
 	 * sanity check in gen7_append_oa_reports() that looks at the
 	 * report-id field to make sure it's non-zero which relies on
+	 * the assumption that new reports are being written to zeroed
+	 * memory...
+	 */
+	memset(dev_priv->perf.oa.oa_buffer.vaddr, 0, OA_BUFFER_SIZE);
+
+	/* Maybe make ->pollin per-stream state if we support multiple
+	 * concurrent streams in the future.
+	 */
+	dev_priv->perf.oa.pollin = false;
+}
+
+static void gen8_init_oa_buffer(struct drm_i915_private *dev_priv)
+{
+	u32 gtt_offset = i915_ggtt_offset(dev_priv->perf.oa.oa_buffer.vma);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	I915_WRITE(GEN8_OASTATUS, 0);
+	I915_WRITE(GEN8_OAHEADPTR, gtt_offset);
+	dev_priv->perf.oa.oa_buffer.head = gtt_offset;
+
+	I915_WRITE(GEN8_OABUFFER_UDW, 0);
+
+	/* PRM says:
+	 *
+	 *  "This MMIO must be set before the OATAILPTR
+	 *  register and after the OAHEADPTR register. This is
+	 *  to enable proper functionality of the overflow
+	 *  bit."
+	 */
+	I915_WRITE(GEN8_OABUFFER, gtt_offset |
+		   OABUFFER_SIZE_16M | OA_MEM_SELECT_GGTT);
+	I915_WRITE(GEN8_OATAILPTR, gtt_offset & GEN8_OATAILPTR_MASK);
+
+	dev_priv->perf.oa.oa_buffer.tail = 0;
+	dev_priv->perf.oa.oa_buffer.tail_timestamp = ktime_get_mono_fast_ns();
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+
+	/* NB: although the OA buffer will initially be allocated
+	 * zeroed via shmfs (and so this memset is redundant when
+	 * first allocating), we may re-init the OA buffer, either
+	 * when re-enabling a stream or in error/reset paths.
+	 *
+	 * The reason we clear the buffer for each re-init is for the
+	 * sanity check in gen8_append_oa_reports() that looks at the
+	 * reason field to make sure it's non-zero which relies on
 	 * the assumption that new reports are being written to zeroed
 	 * memory...
 	 */
@@ -1073,6 +1491,179 @@ static void hsw_disable_metric_set(struct drm_i915_private *dev_priv)
 				      ~GT_NOA_ENABLE));
 }
 
+/* Manages updating the per-context aspects of the OA stream
+ * configuration across all contexts.
+ *
+ * The awkward consideration here is that OACTXCONTROL controls the
+ * exponent for periodic sampling which is primarily used for system
+ * wide profiling where we'd like a consistent sampling period even in
+ * the face of context switches.
+ *
+ * Our approach of updating the register state context (as opposed to
+ * say using a workaround batch buffer) ensures that the hardware
+ * won't automatically reload an out-of-date timer exponent even
+ * transiently before a WA BB could be parsed.
+ */
+static int configure_all_contexts(struct drm_i915_private *dev_priv)
+{
+	struct i915_gem_context *ctx;
+	int ret;
+
+	ret = i915_mutex_lock_interruptible(&dev_priv->drm);
+	if (ret)
+		return ret;
+
+	list_for_each_entry(ctx, &dev_priv->context_list, link) {
+		int i;
+
+		for (i = 0; i < I915_NUM_ENGINES; i++) {
+			/* The actual update of the register state context
+			 * will happen the next time this logical ring
+			 * is submitted. (See i915_oa_update_reg_state()
+			 * which hooks into execlists_update_context())
+			 */
+			atomic_set(&ctx->engine[i].oa_state_dirty, true);
+		}
+	}
+
+	mutex_unlock(&dev_priv->drm.struct_mutex);
+
+	/* Now update the current context.
+	 *
+	 * Note: Using MMIO to update per-context registers requires
+	 * some extra care...
+	 */
+	ret = intel_uncore_begin_ctx_mmio(dev_priv);
+	if (ret) {
+		DRM_ERROR("Failed to bring RCS out of idle to update current ctx OA state");
+		return ret;
+	}
+
+	I915_WRITE(GEN8_OACTXCONTROL, ((dev_priv->perf.oa.period_exponent <<
+					GEN8_OA_TIMER_PERIOD_SHIFT) |
+				      (dev_priv->perf.oa.periodic ?
+				       GEN8_OA_TIMER_ENABLE : 0) |
+				      GEN8_OA_COUNTER_RESUME));
+
+	config_oa_regs(dev_priv, dev_priv->perf.oa.flex_regs,
+			dev_priv->perf.oa.flex_regs_len);
+
+	intel_uncore_end_ctx_mmio(dev_priv);
+
+	return 0;
+}
+
+static int bdw_enable_metric_set(struct drm_i915_private *dev_priv)
+{
+	int ret = i915_oa_select_metric_set_bdw(dev_priv);
+
+	if (ret)
+		return ret;
+
+	I915_WRITE(GDT_CHICKEN_BITS, 0xA0);
+	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
+		       dev_priv->perf.oa.mux_regs_len);
+	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+
+	/* It takes a fairly long time for a new MUX configuration to
+	 * be be applied after these register writes. This delay
+	 * duration is take from Haswell (derived empirically based on
+	 * the render_basic config) but hopefully it covers the
+	 * maximum configuration latency on BDW too...
+	 */
+	usleep_range(15000, 20000);
+
+	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
+		       dev_priv->perf.oa.b_counter_regs_len);
+
+	configure_all_contexts(dev_priv);
+
+	return 0;
+}
+
+static void bdw_disable_metric_set(struct drm_i915_private *dev_priv)
+{
+	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
+				  ~GEN6_CSUNIT_CLOCK_GATE_DISABLE));
+	I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) |
+				    GEN7_DOP_CLOCK_GATE_ENABLE));
+#warning "BDW: Do we need to write to CHICKEN2 to disable DOP clock gating when idle? (vpg does this)"
+}
+
+static int chv_enable_metric_set(struct drm_i915_private *dev_priv)
+{
+	int ret = i915_oa_select_metric_set_chv(dev_priv);
+
+	if (ret)
+		return ret;
+
+	I915_WRITE(GDT_CHICKEN_BITS, 0xA0);
+	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
+		       dev_priv->perf.oa.mux_regs_len);
+	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+
+	/* It takes a fairly long time for a new MUX configuration to
+	 * be be applied after these register writes. This delay
+	 * duration is take from Haswell (derived empirically based on
+	 * the render_basic config) but hopefully it covers the
+	 * maximum configuration latency on CHV too...
+	 */
+	usleep_range(15000, 20000);
+
+	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
+		       dev_priv->perf.oa.b_counter_regs_len);
+
+	configure_all_contexts(dev_priv);
+
+	return 0;
+}
+
+static void chv_disable_metric_set(struct drm_i915_private *dev_priv)
+{
+	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
+				  ~GEN6_CSUNIT_CLOCK_GATE_DISABLE));
+	I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) |
+				    GEN7_DOP_CLOCK_GATE_ENABLE));
+#warning "CHV: Do we need to write to CHICKEN2 to disable DOP clock gating when idle? (vpg does this)"
+}
+
+static int skl_enable_metric_set(struct drm_i915_private *dev_priv)
+{
+	int ret = i915_oa_select_metric_set_skl(dev_priv);
+
+	if (ret)
+		return ret;
+
+	I915_WRITE(GDT_CHICKEN_BITS, 0xA0);
+	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
+		       dev_priv->perf.oa.mux_regs_len);
+	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+
+	/* It takes a fairly long time for a new MUX configuration to
+	 * be be applied after these register writes. This delay
+	 * duration is take from Haswell (derived empirically based on
+	 * the render_basic config) but hopefully it covers the
+	 * maximum configuration latency on CHV too...
+	 */
+	usleep_range(15000, 20000);
+
+	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
+		       dev_priv->perf.oa.b_counter_regs_len);
+
+	configure_all_contexts(dev_priv);
+
+	return 0;
+}
+
+static void skl_disable_metric_set(struct drm_i915_private *dev_priv)
+{
+	I915_WRITE(GEN6_UCGCTL1, (I915_READ(GEN6_UCGCTL1) &
+				  ~GEN6_CSUNIT_CLOCK_GATE_DISABLE));
+	I915_WRITE(GEN7_MISCCPCTL, (I915_READ(GEN7_MISCCPCTL) |
+				    GEN7_DOP_CLOCK_GATE_ENABLE));
+#warning "SKL: Do we need to write to CHICKEN2 to disable DOP clock gating when idle? (vpg does this)"
+}
+
 static void gen7_update_oacontrol_locked(struct drm_i915_private *dev_priv)
 {
 	assert_spin_locked(&dev_priv->perf.hook_lock);
@@ -1117,6 +1708,29 @@ static void gen7_oa_enable(struct drm_i915_private *dev_priv)
 	spin_unlock_irqrestore(&dev_priv->perf.hook_lock, flags);
 }
 
+static void gen8_oa_enable(struct drm_i915_private *dev_priv)
+{
+	u32 report_format = dev_priv->perf.oa.oa_buffer.format;
+
+	/* Reset buf pointers so we don't forward reports from before now.
+	 *
+	 * Think carefully if considering trying to avoid this, since it
+	 * also ensures status flags and the buffer itself are cleared
+	 * in error paths, and we have checks for invalid reports based
+	 * on the assumption that certain fields are written to zeroed
+	 * memory which this helps maintains.
+	 */
+	gen8_init_oa_buffer(dev_priv);
+
+	/* Note: we don't rely on the hardware to perform single context
+	 * filtering and instead filter on the cpu based on the context-id
+	 * field of reports
+	 */
+	I915_WRITE(GEN8_OACONTROL, (report_format <<
+				    GEN8_OA_REPORT_FORMAT_SHIFT) |
+				   GEN8_OA_COUNTER_ENABLE);
+}
+
 /**
  * i915_oa_stream_enable - handle `I915_PERF_IOCTL_ENABLE` for OA stream
  * @stream: An i915 perf stream opened for OA metrics
@@ -1141,6 +1755,11 @@ static void i915_oa_stream_enable(struct i915_perf_stream *stream)
 static void gen7_oa_disable(struct drm_i915_private *dev_priv)
 {
 	I915_WRITE(GEN7_OACONTROL, 0);
+}
+
+static void gen8_oa_disable(struct drm_i915_private *dev_priv)
+{
+	I915_WRITE(GEN8_OACONTROL, 0);
 }
 
 /**
@@ -1299,6 +1918,136 @@ err_oa_buf_alloc:
 		oa_put_render_ctx_id(stream);
 
 	return ret;
+}
+
+static void gen8_legacy_ctx_switch_unlocked(struct drm_i915_gem_request *req)
+{
+	struct drm_i915_private *dev_priv = req->i915;
+	struct intel_ring *ring = req->ring;
+	struct intel_engine_cs *engine = req->engine;
+	struct i915_gem_context *ctx = req->ctx;
+	const struct i915_oa_reg *flex_regs = dev_priv->perf.oa.flex_regs;
+	int n_flex_regs = dev_priv->perf.oa.flex_regs_len;
+	int ret;
+	int i;
+
+	if (!atomic_read(&ctx->engine[engine->id].oa_state_dirty))
+		return;
+
+	ret = intel_ring_begin(req, n_flex_regs * 2 + 4);
+	if (ret)
+		return;
+
+	intel_ring_emit(ring, MI_LOAD_REGISTER_IMM(n_flex_regs + 1));
+
+	intel_ring_emit_reg(ring, GEN8_OACTXCONTROL);
+	intel_ring_emit(ring,
+			(dev_priv->perf.oa.period_exponent <<
+			 GEN8_OA_TIMER_PERIOD_SHIFT) |
+			(dev_priv->perf.oa.periodic ?
+			 GEN8_OA_TIMER_ENABLE : 0) |
+			GEN8_OA_COUNTER_RESUME);
+
+	for (i = 0; i < n_flex_regs; i++) {
+		intel_ring_emit_reg(ring, flex_regs[i].addr);
+		intel_ring_emit(ring, flex_regs[i].value);
+	}
+	intel_ring_emit(ring, MI_NOOP);
+	intel_ring_advance(ring);
+
+	atomic_set(&ctx->engine[engine->id].oa_state_dirty, false);
+}
+
+void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req)
+{
+	struct drm_i915_private *dev_priv = req->i915;
+
+	if (!dev_priv->perf.initialized)
+		return;
+
+	if (dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked == NULL)
+		return;
+
+	if (dev_priv->perf.oa.exclusive_stream &&
+	    dev_priv->perf.oa.exclusive_stream->enabled) {
+
+		/* XXX: We don't take a lock here and this may run
+		 * async with respect to stream methods. Notably we
+		 * don't want to block context switches by long i915
+		 * perf read() operations.
+		 *
+		 * It's expect to always be safe to read the
+		 * dev_priv->perf state needed here, and expected to
+		 * be benign to redundantly update the state if the OA
+		 * unit has been disabled since oa_state_dirty was
+		 * last set.
+		 */
+		dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked(req);
+	}
+}
+
+static void gen8_update_reg_state_unlocked(struct intel_engine_cs *engine,
+					   struct i915_gem_context *ctx,
+					   uint32_t *reg_state)
+{
+	struct drm_i915_private *dev_priv = ctx->i915;
+	const struct i915_oa_reg *flex_regs = dev_priv->perf.oa.flex_regs;
+	int n_flex_regs = dev_priv->perf.oa.flex_regs_len;
+	int ctx_oactxctrl = dev_priv->perf.oa.ctx_oactxctrl_off;
+	int ctx_flexeu0 = dev_priv->perf.oa.ctx_flexeu0_off;
+	int i;
+
+	if (!atomic_read(&ctx->engine[engine->id].oa_state_dirty))
+		return;
+
+	reg_state[ctx_oactxctrl] = i915_mmio_reg_offset(GEN8_OACTXCONTROL);
+	reg_state[ctx_oactxctrl+1] = (dev_priv->perf.oa.period_exponent <<
+				      GEN8_OA_TIMER_PERIOD_SHIFT) |
+				     (dev_priv->perf.oa.periodic ?
+				      GEN8_OA_TIMER_ENABLE : 0) |
+				     GEN8_OA_COUNTER_RESUME;
+
+	for (i = 0; i < n_flex_regs; i++) {
+		uint32_t offset = i915_mmio_reg_offset(flex_regs[i].addr);
+
+		/* Map from mmio address to register state context
+		 * offset... */
+
+		offset -= i915_mmio_reg_offset(EU_PERF_CNTL0);
+
+		offset >>= 5; /* Flex EU mmio registers are separated by 256
+			       * bytes, here they are separated by 8 bytes */
+
+		/* EU_PERF_CNTL0 offset in register state context... */
+		offset += ctx_flexeu0;
+
+		reg_state[offset] = i915_mmio_reg_offset(flex_regs[i].addr);
+		reg_state[offset+1] = flex_regs[i].value;
+	}
+
+	atomic_set(&ctx->engine[engine->id].oa_state_dirty, false);
+}
+
+void i915_oa_update_reg_state(struct intel_engine_cs *engine,
+			      struct i915_gem_context *ctx,
+			      uint32_t *reg_state)
+{
+	struct drm_i915_private *dev_priv = engine->i915;
+
+	if (!dev_priv->perf.initialized)
+		return;
+
+	/* XXX: We don't take a lock here and this may run async with
+	 * respect to stream methods. Notably we don't want to block
+	 * context switches by long i915 perf read() operations.
+	 *
+	 * It's expect to always be safe to read the dev_priv->perf
+	 * state needed here, and expected to be benign to redundantly
+	 * update the state if the OA unit has been disabled since
+	 * oa_state_dirty was last set.
+	 */
+
+	gen8_update_reg_state_unlocked(engine, ctx, reg_state);
 }
 
 /**
@@ -2002,9 +2751,6 @@ int i915_perf_open_ioctl(struct drm_device *dev, void *data,
  */
 void i915_perf_register(struct drm_i915_private *dev_priv)
 {
-	if (!IS_HASWELL(dev_priv))
-		return;
-
 	if (!dev_priv->perf.initialized)
 		return;
 
@@ -2020,10 +2766,25 @@ void i915_perf_register(struct drm_i915_private *dev_priv)
 	if (!dev_priv->perf.metrics_kobj)
 		goto exit;
 
-	if (i915_perf_register_sysfs_hsw(dev_priv)) {
-		kobject_put(dev_priv->perf.metrics_kobj);
-		dev_priv->perf.metrics_kobj = NULL;
+	if (IS_HASWELL(dev_priv)) {
+		if (i915_perf_register_sysfs_hsw(dev_priv))
+			goto sysfs_error;
+	} else if (IS_BROADWELL(dev_priv)) {
+		if (i915_perf_register_sysfs_bdw(dev_priv))
+			goto sysfs_error;
+	} else if (IS_CHERRYVIEW(dev_priv)) {
+		if (i915_perf_register_sysfs_chv(dev_priv))
+			goto sysfs_error;
+	} else if (IS_SKYLAKE(dev_priv)) {
+		if (i915_perf_register_sysfs_skl(dev_priv))
+			goto sysfs_error;
 	}
+
+	goto exit;
+
+sysfs_error:
+	kobject_put(dev_priv->perf.metrics_kobj);
+	dev_priv->perf.metrics_kobj = NULL;
 
 exit:
 	mutex_unlock(&dev_priv->perf.lock);
@@ -2040,13 +2801,17 @@ exit:
  */
 void i915_perf_unregister(struct drm_i915_private *dev_priv)
 {
-	if (!IS_HASWELL(dev_priv))
-		return;
-
 	if (!dev_priv->perf.metrics_kobj)
 		return;
 
-	i915_perf_unregister_sysfs_hsw(dev_priv);
+        if (IS_HASWELL(dev_priv))
+                i915_perf_unregister_sysfs_hsw(dev_priv);
+        else if (IS_BROADWELL(dev_priv))
+                i915_perf_unregister_sysfs_bdw(dev_priv);
+        else if (IS_CHERRYVIEW(dev_priv))
+                i915_perf_unregister_sysfs_chv(dev_priv);
+        else if (IS_SKYLAKE(dev_priv))
+                i915_perf_unregister_sysfs_skl(dev_priv);
 
 	kobject_put(dev_priv->perf.metrics_kobj);
 	dev_priv->perf.metrics_kobj = NULL;
@@ -2105,7 +2870,9 @@ static struct ctl_table dev_root[] = {
  */
 void i915_perf_init(struct drm_i915_private *dev_priv)
 {
-	if (!IS_HASWELL(dev_priv))
+	if (!(IS_HASWELL(dev_priv) ||
+	      IS_BROADWELL(dev_priv) || IS_CHERRYVIEW(dev_priv) ||
+	      IS_SKYLAKE(dev_priv)))
 		return;
 
 	hrtimer_init(&dev_priv->perf.oa.poll_check_timer,
@@ -2118,21 +2885,72 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 	spin_lock_init(&dev_priv->perf.hook_lock);
 	spin_lock_init(&dev_priv->perf.oa.oa_buffer.ptr_lock);
 
-	dev_priv->perf.oa.ops.init_oa_buffer = gen7_init_oa_buffer;
-	dev_priv->perf.oa.ops.enable_metric_set = hsw_enable_metric_set;
-	dev_priv->perf.oa.ops.disable_metric_set = hsw_disable_metric_set;
-	dev_priv->perf.oa.ops.oa_enable = gen7_oa_enable;
-	dev_priv->perf.oa.ops.oa_disable = gen7_oa_disable;
-	dev_priv->perf.oa.ops.read = gen7_oa_read;
-	dev_priv->perf.oa.ops.oa_buffer_check =
-		gen7_oa_buffer_check_unlocked;
+	if (IS_HASWELL(dev_priv)) {
+		dev_priv->perf.oa.ops.init_oa_buffer = gen7_init_oa_buffer;
+		dev_priv->perf.oa.ops.enable_metric_set = hsw_enable_metric_set;
+		dev_priv->perf.oa.ops.disable_metric_set = hsw_disable_metric_set;
+		dev_priv->perf.oa.ops.oa_enable = gen7_oa_enable;
+		dev_priv->perf.oa.ops.oa_disable = gen7_oa_disable;
+		dev_priv->perf.oa.ops.read = gen7_oa_read;
+		dev_priv->perf.oa.ops.oa_buffer_check =
+			gen7_oa_buffer_check_unlocked;
 
-	dev_priv->perf.oa.timestamp_frequency = 12500000;
+		dev_priv->perf.oa.timestamp_frequency = 12500000;
 
-	dev_priv->perf.oa.oa_formats = hsw_oa_formats;
+		dev_priv->perf.oa.oa_formats = hsw_oa_formats;
 
-	dev_priv->perf.oa.n_builtin_sets =
-		i915_oa_n_builtin_metric_sets_hsw;
+		dev_priv->perf.oa.n_builtin_sets =
+			i915_oa_n_builtin_metric_sets_hsw;
+	} else {
+		dev_priv->perf.oa.ops.init_oa_buffer = gen8_init_oa_buffer;
+		dev_priv->perf.oa.ops.oa_enable = gen8_oa_enable;
+		dev_priv->perf.oa.ops.oa_disable = gen8_oa_disable;
+		dev_priv->perf.oa.ops.read = gen8_oa_read;
+		dev_priv->perf.oa.ops.oa_buffer_check =
+			gen8_oa_buffer_check_unlocked;
+
+		dev_priv->perf.oa.oa_formats = gen8_plus_oa_formats;
+
+		if (!i915.enable_execlists) {
+			dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked =
+				gen8_legacy_ctx_switch_unlocked;
+		}
+
+		if (IS_BROADWELL(dev_priv)) {
+			dev_priv->perf.oa.ops.enable_metric_set =
+				bdw_enable_metric_set;
+			dev_priv->perf.oa.ops.disable_metric_set =
+				bdw_disable_metric_set;
+			dev_priv->perf.oa.ctx_oactxctrl_off = 0x120;
+			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
+			dev_priv->perf.oa.n_builtin_sets =
+				i915_oa_n_builtin_metric_sets_bdw;
+
+			dev_priv->perf.oa.timestamp_frequency = 12500000;
+		} else if (IS_CHERRYVIEW(dev_priv)) {
+			dev_priv->perf.oa.ops.enable_metric_set =
+				chv_enable_metric_set;
+			dev_priv->perf.oa.ops.disable_metric_set =
+				chv_disable_metric_set;
+			dev_priv->perf.oa.ctx_oactxctrl_off = 0x120;
+			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
+			dev_priv->perf.oa.n_builtin_sets =
+				i915_oa_n_builtin_metric_sets_chv;
+
+			dev_priv->perf.oa.timestamp_frequency = 12500000;
+		} else if (IS_SKYLAKE(dev_priv)) {
+			dev_priv->perf.oa.ops.enable_metric_set =
+				skl_enable_metric_set;
+			dev_priv->perf.oa.ops.disable_metric_set =
+				skl_disable_metric_set;
+			dev_priv->perf.oa.ctx_oactxctrl_off = 0x128;
+			dev_priv->perf.oa.ctx_flexeu0_off = 0x3de;
+			dev_priv->perf.oa.n_builtin_sets =
+				i915_oa_n_builtin_metric_sets_skl;
+
+			dev_priv->perf.oa.timestamp_frequency = 12000000;
+		}
+	}
 
 	dev_priv->perf.sysctl_header = register_sysctl_table(dev_root);
 
@@ -2151,5 +2969,6 @@ void i915_perf_fini(struct drm_i915_private *dev_priv)
 	unregister_sysctl_table(dev_priv->perf.sysctl_header);
 
 	memset(&dev_priv->perf.oa.ops, 0, sizeof(dev_priv->perf.oa.ops));
+
 	dev_priv->perf.initialized = false;
 }
