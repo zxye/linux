@@ -370,6 +370,8 @@ static u64 execlists_update_context(struct drm_i915_gem_request *rq)
 	if (ppgtt && !USES_FULL_48BIT_PPGTT(ppgtt->base.dev))
 		execlists_update_context_pdps(ppgtt, reg_state);
 
+	i915_oa_update_reg_state(rq->engine, rq->ctx, reg_state);
+
 	return ce->lrc_desc;
 }
 
@@ -2029,6 +2031,8 @@ populate_lr_context(struct i915_gem_context *ctx,
 		ASSIGN_CTX_REG(reg_state, CTX_R_PWR_CLK_STATE, GEN8_R_PWR_CLK_STATE,
 			       make_rpcs(dev_priv));
 	}
+
+	i915_oa_update_reg_state(engine, ctx, reg_state);
 
 	i915_gem_object_unpin_map(ctx_obj);
 

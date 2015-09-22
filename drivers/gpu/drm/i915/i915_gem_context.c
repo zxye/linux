@@ -890,6 +890,8 @@ static int do_rcs_switch(struct drm_i915_gem_request *req)
 		to->engine[RCS].initialised = true;
 	}
 
+	i915_oa_legacy_ctx_switch_notify(req);
+
 	return 0;
 
 err:

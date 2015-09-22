@@ -656,6 +656,7 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define  GEN7_OABUFFER_STOP_RESUME_ENABLE   (1<<1)
 #define  GEN7_OABUFFER_RESUME		    (1<<0)
 
+#define GEN8_OABUFFER_UDW _MMIO(0x23b4)
 #define GEN8_OABUFFER _MMIO(0x2b14)
 
 #define GEN7_OASTATUS1 _MMIO(0x2364)
@@ -674,7 +675,9 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define  GEN8_OASTATUS_REPORT_LOST	    (1<<0)
 
 #define GEN8_OAHEADPTR _MMIO(0x2B0C)
+#define GEN8_OAHEADPTR_MASK    0xffffffc0
 #define GEN8_OATAILPTR _MMIO(0x2B10)
+#define GEN8_OATAILPTR_MASK    0xffffffc0
 
 #define OABUFFER_SIZE_128K  (0<<3)
 #define OABUFFER_SIZE_256K  (1<<3)
