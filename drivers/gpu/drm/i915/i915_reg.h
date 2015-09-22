@@ -651,7 +651,9 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define  GEN8_OASTATUS_REPORT_LOST	    (1<<0)
 
 #define GEN8_OAHEADPTR _MMIO(0x2B0C)
+#define GEN8_OAHEADPTR_MASK    0xffffffc0
 #define GEN8_OATAILPTR _MMIO(0x2B10)
+#define GEN8_OATAILPTR_MASK    0xffffffc0
 
 #define OABUFFER_SIZE_128K  (0<<3)
 #define OABUFFER_SIZE_256K  (1<<3)
@@ -3278,6 +3280,16 @@ enum skl_disp_power_wells {
 				INTERVAL_0_833_US(us) : \
 				INTERVAL_1_33_US(us)) : \
 				INTERVAL_1_28_US(us))
+
+/* GT CS timestamp frequency */
+#define FREQUENCY_12_5_MHZ	(12500000)
+#define FREQUENCY_12_0_MHZ	(12000000)
+#define FREQUENCY_19_2_MHZ	(19200000)
+#define GT_CS_TIMESTAMP_FREQUENCY(dev_priv) (IS_GEN9(dev_priv) ? \
+				(IS_BROXTON(dev_priv) ? \
+				FREQUENCY_19_2_MHZ : \
+				FREQUENCY_12_0_MHZ) : \
+				FREQUENCY_12_5_MHZ)
 
 /*
  * Logical Context regs
