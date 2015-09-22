@@ -353,6 +353,8 @@ struct  intel_engine_cs {
 	 * to encode the command length in the header).
 	 */
 	u32 (*get_cmd_length_mask)(u32 cmd_header);
+
+	atomic_t oa_state_dirty;
 };
 
 static inline bool
