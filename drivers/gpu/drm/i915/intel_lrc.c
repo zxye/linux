@@ -359,6 +359,8 @@ static int execlists_update_context(struct intel_engine_cs *ring,
 		ASSIGN_CTX_PDP(ppgtt, reg_state, 0);
 	}
 
+	i915_oa_update_reg_state(ring, reg_state);
+
 	kunmap_atomic(reg_state);
 
 	return 0;
@@ -1800,6 +1802,8 @@ populate_lr_context(struct intel_context *ctx, struct drm_i915_gem_object *ctx_o
 		reg_state[CTX_R_PWR_CLK_STATE] = GEN8_R_PWR_CLK_STATE;
 		reg_state[CTX_R_PWR_CLK_STATE+1] = make_rpcs(dev);
 	}
+
+	i915_oa_update_reg_state(ring, reg_state);
 
 	kunmap_atomic(reg_state);
 
