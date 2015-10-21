@@ -26,15 +26,14 @@
 
 #include "i915_drv.h"
 
-const struct i915_oa_reg i915_oa_3d_b_counter_config_hsw[] = {
+static const struct i915_oa_reg b_counter_config_3d[] = {
 	{ 0x2724, 0x00800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0x00800000 },
 	{ 0x2710, 0x00000000 },
 };
-const int i915_oa_3d_b_counter_config_hsw_len = 4;
 
-const struct i915_oa_reg i915_oa_3d_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_3d[] = {
 	{ 0x253A4, 0x01600000 },
 	{ 0x25440, 0x00100000 },
 	{ 0x25128, 0x00000000 },
@@ -95,9 +94,30 @@ const struct i915_oa_reg i915_oa_3d_mux_config_hsw[] = {
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00042049 },
 };
-const int i915_oa_3d_mux_config_hsw_len = 59;
 
-const struct i915_oa_reg i915_oa_compute_b_counter_config_hsw[] = {
+static int select_3d_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_3d;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_3d);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_3d;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_3d);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_compute[] = {
 	{ 0x2710, 0x00000000 },
 	{ 0x2714, 0x00800000 },
 	{ 0x2718, 0xAAAAAAAA },
@@ -115,9 +135,8 @@ const struct i915_oa_reg i915_oa_compute_b_counter_config_hsw[] = {
 	{ 0x2758, 0x00000000 },
 	{ 0x275C, 0x00000000 },
 };
-const int i915_oa_compute_b_counter_config_hsw_len = 16;
 
-const struct i915_oa_reg i915_oa_compute_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_compute[] = {
 	{ 0x253A4, 0x00000000 },
 	{ 0x2681C, 0x01F00800 },
 	{ 0x26820, 0x00001000 },
@@ -151,9 +170,30 @@ const struct i915_oa_reg i915_oa_compute_mux_config_hsw[] = {
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000C03 },
 };
-const int i915_oa_compute_mux_config_hsw_len = 32;
 
-const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_hsw[] = {
+static int select_compute_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_compute;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_compute);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_compute;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_compute);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_compute_extended[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -175,9 +215,8 @@ const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_hsw[] = {
 	{ 0x27a8, 0x0007fff3 },
 	{ 0x27ac, 0x0000fffe },
 };
-const int i915_oa_compute_extended_b_counter_config_hsw_len = 20;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_compute_extended[] = {
 	{ 0x2681C, 0x3EB00800 },
 	{ 0x26820, 0x00900000 },
 	{ 0x25384, 0x02AAAAAA },
@@ -194,9 +233,30 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_hsw[] = {
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000000 },
 };
-const int i915_oa_compute_extended_mux_config_hsw_len = 15;
 
-const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_hsw[] = {
+static int select_compute_extended_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_compute_extended;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_compute_extended);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_compute_extended;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_compute_extended);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_memory_reads[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -226,9 +286,8 @@ const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_hsw[] = {
 	{ 0x27a8, 0x0007f8f2 },
 	{ 0x27ac, 0x0000fc00 },
 };
-const int i915_oa_memory_reads_b_counter_config_hsw_len = 28;
 
-const struct i915_oa_reg i915_oa_memory_reads_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_memory_reads[] = {
 	{ 0x253A4, 0x34300000 },
 	{ 0x25440, 0x2D800000 },
 	{ 0x25444, 0x00000008 },
@@ -248,9 +307,30 @@ const struct i915_oa_reg i915_oa_memory_reads_mux_config_hsw[] = {
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000000 },
 };
-const int i915_oa_memory_reads_mux_config_hsw_len = 18;
 
-const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_hsw[] = {
+static int select_memory_reads_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_memory_reads;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_memory_reads);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_memory_reads;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_memory_reads);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_memory_writes[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -280,9 +360,8 @@ const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_hsw[] = {
 	{ 0x27a8, 0x0007f8f2 },
 	{ 0x27ac, 0x0000fc00 },
 };
-const int i915_oa_memory_writes_b_counter_config_hsw_len = 28;
 
-const struct i915_oa_reg i915_oa_memory_writes_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_memory_writes[] = {
 	{ 0x253A4, 0x34300000 },
 	{ 0x25440, 0x01500000 },
 	{ 0x25444, 0x00000120 },
@@ -302,9 +381,30 @@ const struct i915_oa_reg i915_oa_memory_writes_mux_config_hsw[] = {
 	{ 0x2541C, 0x00000000 },
 	{ 0x25428, 0x00000000 },
 };
-const int i915_oa_memory_writes_mux_config_hsw_len = 18;
 
-const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[] = {
+static int select_memory_writes_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_memory_writes;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_memory_writes);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_memory_writes;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_memory_writes);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_sampler_balance[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -312,9 +412,8 @@ const struct i915_oa_reg i915_oa_sampler_balance_b_counter_config_hsw[] = {
 	{ 0x2720, 0x00000000 },
 	{ 0x2724, 0x00800000 },
 };
-const int i915_oa_sampler_balance_b_counter_config_hsw_len = 6;
 
-const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[] = {
+static const struct i915_oa_reg mux_config_sampler_balance[] = {
 	{ 0x2eb9c, 0x01906400 },
 	{ 0x2fb9c, 0x01906400 },
 	{ 0x253a4, 0x00000000 },
@@ -356,4 +455,45 @@ const struct i915_oa_reg i915_oa_sampler_balance_mux_config_hsw[] = {
 	{ 0x2541c, 0x00000000 },
 	{ 0x25428, 0x0004a54a },
 };
-const int i915_oa_sampler_balance_mux_config_hsw_len = 40;
+
+static int select_sampler_balance_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_sampler_balance;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_sampler_balance);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_sampler_balance;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_sampler_balance);
+
+        return 0;
+}
+
+int i915_oa_select_metric_set_hsw(struct drm_i915_private *dev_priv)
+{
+        switch (dev_priv->perf.oa.metrics_set) {
+        case I915_OA_METRICS_SET_3D:
+                return select_3d_config(dev_priv);
+        case I915_OA_METRICS_SET_COMPUTE:
+                return select_compute_config(dev_priv);
+        case I915_OA_METRICS_SET_COMPUTE_EXTENDED:
+                return select_compute_extended_config(dev_priv);
+        case I915_OA_METRICS_SET_MEMORY_READS:
+                return select_memory_reads_config(dev_priv);
+        case I915_OA_METRICS_SET_MEMORY_WRITES:
+                return select_memory_writes_config(dev_priv);
+        case I915_OA_METRICS_SET_SAMPLER_BALANCE:
+                return select_sampler_balance_config(dev_priv);
+        default:
+                return -ENODEV;
+        }
+}

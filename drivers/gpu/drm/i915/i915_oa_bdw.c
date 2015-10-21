@@ -26,15 +26,14 @@
 
 #include "i915_drv.h"
 
-const struct i915_oa_reg i915_oa_3d_b_counter_config_bdw[] = {
+static const struct i915_oa_reg b_counter_config_3d[] = {
 	{ 0x2710, 0x00000000 },
 	{ 0x2714, 0x00800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2724, 0x00800000 },
 };
-const int i915_oa_3d_b_counter_config_bdw_len = 4;
 
-const struct i915_oa_reg i915_oa_3d_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_3d[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -43,9 +42,8 @@ const struct i915_oa_reg i915_oa_3d_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_3d_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_3d_mux_config_1_0_slice_mask_0x01_bdw[] = {
+static const struct i915_oa_reg mux_config_3d_1_0_slices_0x01[] = {
 	{ 0x9888, 0x143F000F },
 	{ 0x9888, 0x14110014 },
 	{ 0x9888, 0x14310014 },
@@ -148,9 +146,8 @@ const struct i915_oa_reg i915_oa_3d_mux_config_1_0_slice_mask_0x01_bdw[] = {
 	{ 0x9888, 0x3F8014A5 },
 	{ 0x9888, 0x41800005 },
 };
-const int i915_oa_3d_mux_config_1_0_slice_mask_0x01_bdw_len = 101;
 
-const struct i915_oa_reg i915_oa_3d_mux_config_1_1_slice_mask_0x02_bdw[] = {
+static const struct i915_oa_reg mux_config_3d_1_1_slices_0x02[] = {
 	{ 0x9888, 0x143F000F },
 	{ 0x9888, 0x14BF000F },
 	{ 0x9888, 0x14910014 },
@@ -258,17 +255,52 @@ const struct i915_oa_reg i915_oa_3d_mux_config_1_1_slice_mask_0x02_bdw[] = {
 	{ 0x9888, 0x3F800421 },
 	{ 0x9888, 0x41800841 },
 };
-const int i915_oa_3d_mux_config_1_1_slice_mask_0x02_bdw_len = 106;
 
-const struct i915_oa_reg i915_oa_compute_b_counter_config_bdw[] = {
+static int select_3d_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        if (INTEL_INFO(dev_priv)->slice_mask & 0x01) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_3d_1_0_slices_0x01;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_3d_1_0_slices_0x01);
+        } else if (INTEL_INFO(dev_priv)->slice_mask & 0x02) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_3d_1_1_slices_0x02;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_3d_1_1_slices_0x02);
+        } else {
+                DRM_DEBUG_DRIVER("No suitable MUX config for \"3D\" metric set");
+                return -EINVAL;
+        }
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_3d;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_3d);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_3d;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_3d);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_compute[] = {
 	{ 0x2710, 0x00000000 },
 	{ 0x2714, 0x00800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2724, 0x00800000 },
 };
-const int i915_oa_compute_b_counter_config_bdw_len = 4;
 
-const struct i915_oa_reg i915_oa_compute_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_compute[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00000003 },
 	{ 0xE658, 0x00002001 },
@@ -277,9 +309,8 @@ const struct i915_oa_reg i915_oa_compute_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00808708 },
 	{ 0xE65c, 0x00a08908 },
 };
-const int i915_oa_compute_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_compute_mux_config_1_0_slice_mask_0x01_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_1_0_slices_0x01[] = {
 	{ 0x9888, 0x105C00E0 },
 	{ 0x9888, 0x105800E0 },
 	{ 0x9888, 0x103800E0 },
@@ -364,9 +395,8 @@ const struct i915_oa_reg i915_oa_compute_mux_config_1_0_slice_mask_0x01_bdw[] = 
 	{ 0x9888, 0x3F801062 },
 	{ 0x9888, 0x41801084 },
 };
-const int i915_oa_compute_mux_config_1_0_slice_mask_0x01_bdw_len = 83;
 
-const struct i915_oa_reg i915_oa_compute_mux_config_1_2_slice_mask_0x02_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_1_2_slices_0x02[] = {
 	{ 0x9888, 0x10DC00E0 },
 	{ 0x9888, 0x10D800E0 },
 	{ 0x9888, 0x10B800E0 },
@@ -463,9 +493,45 @@ const struct i915_oa_reg i915_oa_compute_mux_config_1_2_slice_mask_0x02_bdw[] = 
 	{ 0x9888, 0x3F800062 },
 	{ 0x9888, 0x41800000 },
 };
-const int i915_oa_compute_mux_config_1_2_slice_mask_0x02_bdw_len = 95;
 
-const struct i915_oa_reg i915_oa_render_pipe_profile_b_counter_config_bdw[] = {
+static int select_compute_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        if (INTEL_INFO(dev_priv)->slice_mask & 0x01) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_1_0_slices_0x01;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_1_0_slices_0x01);
+        } else if (INTEL_INFO(dev_priv)->slice_mask & 0x02) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_1_2_slices_0x02;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_1_2_slices_0x02);
+        } else {
+                DRM_DEBUG_DRIVER("No suitable MUX config for \"COMPUTE\" metric set");
+                return -EINVAL;
+        }
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_compute;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_compute);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_compute;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_compute);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_render_pipe_profile[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -487,9 +553,8 @@ const struct i915_oa_reg i915_oa_render_pipe_profile_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x0003fffa },
 	{ 0x27ac, 0x00005f7f },
 };
-const int i915_oa_render_pipe_profile_b_counter_config_bdw_len = 20;
 
-const struct i915_oa_reg i915_oa_render_pipe_profile_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_render_pipe_profile[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00015014 },
 	{ 0xE658, 0x00025024 },
@@ -498,9 +563,8 @@ const struct i915_oa_reg i915_oa_render_pipe_profile_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00055054 },
 	{ 0xE65c, 0x00065064 },
 };
-const int i915_oa_render_pipe_profile_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_render_pipe_profile_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_render_pipe_profile[] = {
 	{ 0x9888, 0x0A1E0000 },
 	{ 0x9888, 0x0C1F000F },
 	{ 0x9888, 0x10176800 },
@@ -611,9 +675,35 @@ const struct i915_oa_reg i915_oa_render_pipe_profile_mux_config_bdw[] = {
 	{ 0x9888, 0x3F800422 },
 	{ 0x9888, 0x41800021 },
 };
-const int i915_oa_render_pipe_profile_mux_config_bdw_len = 109;
 
-const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_bdw[] = {
+static int select_render_pipe_profile_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_render_pipe_profile;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_render_pipe_profile);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_render_pipe_profile;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_render_pipe_profile);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_render_pipe_profile;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_render_pipe_profile);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_memory_reads[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -643,9 +733,8 @@ const struct i915_oa_reg i915_oa_memory_reads_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x0007f8f2 },
 	{ 0x27ac, 0x0000fe00 },
 };
-const int i915_oa_memory_reads_b_counter_config_bdw_len = 28;
 
-const struct i915_oa_reg i915_oa_memory_reads_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_memory_reads[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00015014 },
 	{ 0xE658, 0x00025024 },
@@ -654,9 +743,8 @@ const struct i915_oa_reg i915_oa_memory_reads_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00055054 },
 	{ 0xE65c, 0x00065064 },
 };
-const int i915_oa_memory_reads_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_memory_reads_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_memory_reads[] = {
 	{ 0x9888, 0x198B0343 },
 	{ 0x9888, 0x13845800 },
 	{ 0x9888, 0x15840018 },
@@ -706,9 +794,35 @@ const struct i915_oa_reg i915_oa_memory_reads_mux_config_bdw[] = {
 	{ 0x9888, 0x3F800084 },
 	{ 0x9888, 0x41800000 },
 };
-const int i915_oa_memory_reads_mux_config_bdw_len = 48;
 
-const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_bdw[] = {
+static int select_memory_reads_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_memory_reads;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_memory_reads);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_memory_reads;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_memory_reads);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_memory_reads;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_memory_reads);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_memory_writes[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -738,9 +852,8 @@ const struct i915_oa_reg i915_oa_memory_writes_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x0007f8f2 },
 	{ 0x27ac, 0x0000fe00 },
 };
-const int i915_oa_memory_writes_b_counter_config_bdw_len = 28;
 
-const struct i915_oa_reg i915_oa_memory_writes_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_memory_writes[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00015014 },
 	{ 0xE658, 0x00025024 },
@@ -749,9 +862,8 @@ const struct i915_oa_reg i915_oa_memory_writes_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00055054 },
 	{ 0xE65c, 0x00065064 },
 };
-const int i915_oa_memory_writes_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_memory_writes_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_memory_writes[] = {
 	{ 0x9888, 0x198B0343 },
 	{ 0x9888, 0x13845400 },
 	{ 0x9888, 0x3580001A },
@@ -800,9 +912,35 @@ const struct i915_oa_reg i915_oa_memory_writes_mux_config_bdw[] = {
 	{ 0x9888, 0x3F800084 },
 	{ 0x9888, 0x41800000 },
 };
-const int i915_oa_memory_writes_mux_config_bdw_len = 47;
 
-const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_bdw[] = {
+static int select_memory_writes_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_memory_writes;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_memory_writes);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_memory_writes;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_memory_writes);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_memory_writes;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_memory_writes);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_compute_extended[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -824,9 +962,8 @@ const struct i915_oa_reg i915_oa_compute_extended_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x0007fe7a },
 	{ 0x27ac, 0x0000bf00 },
 };
-const int i915_oa_compute_extended_b_counter_config_bdw_len = 20;
 
-const struct i915_oa_reg i915_oa_compute_extended_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_compute_extended[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00000003 },
 	{ 0xE658, 0x00002001 },
@@ -835,9 +972,8 @@ const struct i915_oa_reg i915_oa_compute_extended_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00808708 },
 	{ 0xE65c, 0x00a08908 },
 };
-const int i915_oa_compute_extended_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_0_subslice_mask_0x01_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_0_subslices_0x01[] = {
 	{ 0x9888, 0x143D0160 },
 	{ 0x9888, 0x163D2800 },
 	{ 0x9888, 0x183D0120 },
@@ -910,9 +1046,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_0_subslice_mask_0
 	{ 0x9888, 0x258B5551 },
 	{ 0x9888, 0x278B0015 },
 };
-const int i915_oa_compute_extended_mux_config_1_0_subslice_mask_0x01_bdw_len = 71;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_1_subslice_mask_0x08_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_1_subslices_0x08[] = {
 	{ 0x9888, 0x14BD0160 },
 	{ 0x9888, 0x16BD2800 },
 	{ 0x9888, 0x18BD0120 },
@@ -1001,9 +1136,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_1_subslice_mask_0
 	{ 0x9888, 0x038DA000 },
 	{ 0x9888, 0x058DA000 },
 };
-const int i915_oa_compute_extended_mux_config_1_1_subslice_mask_0x08_bdw_len = 87;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_2_subslice_mask_0x02_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_2_subslices_0x02[] = {
 	{ 0x9888, 0x105C00E0 },
 	{ 0x9888, 0x145B0160 },
 	{ 0x9888, 0x165B2800 },
@@ -1059,9 +1193,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_2_subslice_mask_0
 	{ 0x9888, 0x258B5551 },
 	{ 0x9888, 0x278B0015 },
 };
-const int i915_oa_compute_extended_mux_config_1_2_subslice_mask_0x02_bdw_len = 54;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_3_subslice_mask_0x10_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_3_subslices_0x10[] = {
 	{ 0x9888, 0x10DC00E0 },
 	{ 0x9888, 0x14DB0160 },
 	{ 0x9888, 0x16DB2800 },
@@ -1133,9 +1266,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_3_subslice_mask_0
 	{ 0x9888, 0x038DA000 },
 	{ 0x9888, 0x058DA000 },
 };
-const int i915_oa_compute_extended_mux_config_1_3_subslice_mask_0x10_bdw_len = 70;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_4_subslice_mask_0x04_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_4_subslices_0x04[] = {
 	{ 0x9888, 0x103800E0 },
 	{ 0x9888, 0x143A0160 },
 	{ 0x9888, 0x163A2800 },
@@ -1183,9 +1315,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_4_subslice_mask_0
 	{ 0x9888, 0x258B5551 },
 	{ 0x9888, 0x278B0015 },
 };
-const int i915_oa_compute_extended_mux_config_1_4_subslice_mask_0x04_bdw_len = 46;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_5_subslice_mask_0x20_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended_1_5_subslices_0x20[] = {
 	{ 0x9888, 0x10B800E0 },
 	{ 0x9888, 0x14BA0160 },
 	{ 0x9888, 0x16BA2800 },
@@ -1249,9 +1380,8 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_1_5_subslice_mask_0
 	{ 0x9888, 0x038DA000 },
 	{ 0x9888, 0x058DA000 },
 };
-const int i915_oa_compute_extended_mux_config_1_5_subslice_mask_0x20_bdw_len = 62;
 
-const struct i915_oa_reg i915_oa_compute_extended_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_extended[] = {
 	{ 0x9888, 0x1F85AA80 },
 	{ 0x9888, 0x2185AAA2 },
 	{ 0x9888, 0x2385002A },
@@ -1294,9 +1424,69 @@ const struct i915_oa_reg i915_oa_compute_extended_mux_config_bdw[] = {
 	{ 0x9888, 0x3F800421 },
 	{ 0x9888, 0x41800000 },
 };
-const int i915_oa_compute_extended_mux_config_bdw_len = 41;
 
-const struct i915_oa_reg i915_oa_compute_l3_cache_b_counter_config_bdw[] = {
+static int select_compute_extended_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        if (INTEL_INFO(dev_priv)->subslice_mask & 0x01) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_0_subslices_0x01;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_0_subslices_0x01);
+        } else if (INTEL_INFO(dev_priv)->subslice_mask & 0x08) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_1_subslices_0x08;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_1_subslices_0x08);
+        } else if (INTEL_INFO(dev_priv)->subslice_mask & 0x02) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_2_subslices_0x02;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_2_subslices_0x02);
+        } else if (INTEL_INFO(dev_priv)->subslice_mask & 0x10) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_3_subslices_0x10;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_3_subslices_0x10);
+        } else if (INTEL_INFO(dev_priv)->subslice_mask & 0x04) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_4_subslices_0x04;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_4_subslices_0x04);
+        } else if (INTEL_INFO(dev_priv)->subslice_mask & 0x20) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_compute_extended_1_5_subslices_0x20;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_compute_extended_1_5_subslices_0x20);
+        dev_priv->perf.oa.mux_regs =
+                mux_config_compute_extended;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_compute_extended);
+        } else {
+                DRM_DEBUG_DRIVER("No suitable MUX config for \"COMPUTE_EXTENDED\" metric set");
+                return -EINVAL;
+        }
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_compute_extended;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_compute_extended);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_compute_extended;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_compute_extended);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_compute_l3_cache[] = {
 	{ 0x2710, 0x00000000 },
 	{ 0x2714, 0x30800000 },
 	{ 0x2720, 0x00000000 },
@@ -1310,9 +1500,8 @@ const struct i915_oa_reg i915_oa_compute_l3_cache_b_counter_config_bdw[] = {
 	{ 0x2798, 0x0007fffa },
 	{ 0x279c, 0x0000fbdf },
 };
-const int i915_oa_compute_l3_cache_b_counter_config_bdw_len = 12;
 
-const struct i915_oa_reg i915_oa_compute_l3_cache_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_compute_l3_cache[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00000003 },
 	{ 0xE658, 0x00002001 },
@@ -1321,9 +1510,8 @@ const struct i915_oa_reg i915_oa_compute_l3_cache_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00301300 },
 	{ 0xE65c, 0x00401400 },
 };
-const int i915_oa_compute_l3_cache_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_compute_l3_cache_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_compute_l3_cache[] = {
 	{ 0x9888, 0x143F00B3 },
 	{ 0x9888, 0x14BF00B3 },
 	{ 0x9888, 0x138303C0 },
@@ -1430,9 +1618,35 @@ const struct i915_oa_reg i915_oa_compute_l3_cache_mux_config_bdw[] = {
 	{ 0x9888, 0x3F800800 },
 	{ 0x9888, 0x418014A2 },
 };
-const int i915_oa_compute_l3_cache_mux_config_bdw_len = 105;
 
-const struct i915_oa_reg i915_oa_data_port_reads_coalescing_b_counter_config_bdw[] = {
+static int select_compute_l3_cache_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_compute_l3_cache;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_compute_l3_cache);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_compute_l3_cache;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_compute_l3_cache);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_compute_l3_cache;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_compute_l3_cache);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_data_port_reads_coalescing[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -1458,9 +1672,8 @@ const struct i915_oa_reg i915_oa_data_port_reads_coalescing_b_counter_config_bdw
 	{ 0x27a8, 0x0007fffa },
 	{ 0x27ac, 0x0000bf7f },
 };
-const int i915_oa_data_port_reads_coalescing_b_counter_config_bdw_len = 24;
 
-const struct i915_oa_reg i915_oa_data_port_reads_coalescing_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_data_port_reads_coalescing[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00000003 },
 	{ 0xE658, 0x00002001 },
@@ -1469,9 +1682,8 @@ const struct i915_oa_reg i915_oa_data_port_reads_coalescing_flex_eu_config_bdw[]
 	{ 0xE55c, 0x00808708 },
 	{ 0xE65c, 0x00a08908 },
 };
-const int i915_oa_data_port_reads_coalescing_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_data_port_reads_coalescing_mux_config_1_0_subslice_mask_0x01_bdw[] = {
+static const struct i915_oa_reg mux_config_data_port_reads_coalescing_1_0_subslices_0x01[] = {
 	{ 0x9888, 0x103D0005 },
 	{ 0x9888, 0x163D240B },
 	{ 0x9888, 0x1058022F },
@@ -1585,9 +1797,40 @@ const struct i915_oa_reg i915_oa_data_port_reads_coalescing_mux_config_1_0_subsl
 	{ 0x9888, 0x3F800421 },
 	{ 0x9888, 0x41800041 },
 };
-const int i915_oa_data_port_reads_coalescing_mux_config_1_0_subslice_mask_0x01_bdw_len = 112;
 
-const struct i915_oa_reg i915_oa_data_port_writes_coalescing_b_counter_config_bdw[] = {
+static int select_data_port_reads_coalescing_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        if (INTEL_INFO(dev_priv)->subslice_mask & 0x01) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_data_port_reads_coalescing_1_0_subslices_0x01;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_data_port_reads_coalescing_1_0_subslices_0x01);
+        } else {
+                DRM_DEBUG_DRIVER("No suitable MUX config for \"DATA_PORT_READS_COALESCING\" metric set");
+                return -EINVAL;
+        }
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_data_port_reads_coalescing;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_data_port_reads_coalescing);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_data_port_reads_coalescing;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_data_port_reads_coalescing);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_data_port_writes_coalescing[] = {
 	{ 0x2724, 0xf0800000 },
 	{ 0x2720, 0x00000000 },
 	{ 0x2714, 0xf0800000 },
@@ -1613,9 +1856,8 @@ const struct i915_oa_reg i915_oa_data_port_writes_coalescing_b_counter_config_bd
 	{ 0x27a8, 0x0005ff82 },
 	{ 0x27ac, 0x0000bfd0 },
 };
-const int i915_oa_data_port_writes_coalescing_b_counter_config_bdw_len = 24;
 
-const struct i915_oa_reg i915_oa_data_port_writes_coalescing_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_data_port_writes_coalescing[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00000003 },
 	{ 0xE658, 0x00002001 },
@@ -1624,9 +1866,8 @@ const struct i915_oa_reg i915_oa_data_port_writes_coalescing_flex_eu_config_bdw[
 	{ 0xE55c, 0x00808708 },
 	{ 0xE65c, 0x00a08908 },
 };
-const int i915_oa_data_port_writes_coalescing_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_data_port_writes_coalescing_mux_config_1_0_subslice_mask_0x01_bdw[] = {
+static const struct i915_oa_reg mux_config_data_port_writes_coalescing_1_0_subslices_0x01[] = {
 	{ 0x9888, 0x103D0005 },
 	{ 0x9888, 0x143D0120 },
 	{ 0x9888, 0x163D2400 },
@@ -1736,9 +1977,40 @@ const struct i915_oa_reg i915_oa_data_port_writes_coalescing_mux_config_1_0_subs
 	{ 0x9888, 0x3F800421 },
 	{ 0x9888, 0x41800041 },
 };
-const int i915_oa_data_port_writes_coalescing_mux_config_1_0_subslice_mask_0x01_bdw_len = 108;
 
-const struct i915_oa_reg i915_oa_l3_1_b_counter_config_bdw[] = {
+static int select_data_port_writes_coalescing_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        if (INTEL_INFO(dev_priv)->subslice_mask & 0x01) {
+                dev_priv->perf.oa.mux_regs =
+                        mux_config_data_port_writes_coalescing_1_0_subslices_0x01;
+                dev_priv->perf.oa.mux_regs_len =
+                        ARRAY_SIZE(mux_config_data_port_writes_coalescing_1_0_subslices_0x01);
+        } else {
+                DRM_DEBUG_DRIVER("No suitable MUX config for \"DATA_PORT_WRITES_COALESCING\" metric set");
+                return -EINVAL;
+        }
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_data_port_writes_coalescing;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_data_port_writes_coalescing);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_data_port_writes_coalescing;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_data_port_writes_coalescing);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_l3_1[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -1762,9 +2034,8 @@ const struct i915_oa_reg i915_oa_l3_1_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x00000402 },
 	{ 0x27ac, 0x0000fd3f },
 };
-const int i915_oa_l3_1_b_counter_config_bdw_len = 22;
 
-const struct i915_oa_reg i915_oa_l3_1_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_l3_1[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -1773,9 +2044,8 @@ const struct i915_oa_reg i915_oa_l3_1_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_l3_1_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_l3_1_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_l3_1[] = {
 	{ 0x9888, 0x10bf03da },
 	{ 0x9888, 0x14bf0001 },
 	{ 0x9888, 0x12980340 },
@@ -1866,9 +2136,35 @@ const struct i915_oa_reg i915_oa_l3_1_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800060 },
 };
-const int i915_oa_l3_1_mux_config_bdw_len = 89;
 
-const struct i915_oa_reg i915_oa_l3_2_b_counter_config_bdw[] = {
+static int select_l3_1_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_l3_1;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_l3_1);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_l3_1;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_l3_1);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_l3_1;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_l3_1);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_l3_2[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -1892,9 +2188,8 @@ const struct i915_oa_reg i915_oa_l3_2_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x00000402 },
 	{ 0x27ac, 0x0000fd3f },
 };
-const int i915_oa_l3_2_b_counter_config_bdw_len = 22;
 
-const struct i915_oa_reg i915_oa_l3_2_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_l3_2[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -1903,9 +2198,8 @@ const struct i915_oa_reg i915_oa_l3_2_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_l3_2_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_l3_2_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_l3_2[] = {
 	{ 0x9888, 0x103f03da },
 	{ 0x9888, 0x143f0001 },
 	{ 0x9888, 0x12180340 },
@@ -1983,9 +2277,35 @@ const struct i915_oa_reg i915_oa_l3_2_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800060 },
 };
-const int i915_oa_l3_2_mux_config_bdw_len = 76;
 
-const struct i915_oa_reg i915_oa_l3_3_b_counter_config_bdw[] = {
+static int select_l3_2_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_l3_2;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_l3_2);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_l3_2;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_l3_2);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_l3_2;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_l3_2);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_l3_3[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2009,9 +2329,8 @@ const struct i915_oa_reg i915_oa_l3_3_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x00000402 },
 	{ 0x27ac, 0x0000fd3f },
 };
-const int i915_oa_l3_3_b_counter_config_bdw_len = 22;
 
-const struct i915_oa_reg i915_oa_l3_3_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_l3_3[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2020,9 +2339,8 @@ const struct i915_oa_reg i915_oa_l3_3_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_l3_3_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_l3_3_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_l3_3[] = {
 	{ 0x9888, 0x121b0340 },
 	{ 0x9888, 0x103f0274 },
 	{ 0x9888, 0x123f0000 },
@@ -2116,9 +2434,35 @@ const struct i915_oa_reg i915_oa_l3_3_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800045 },
 };
-const int i915_oa_l3_3_mux_config_bdw_len = 92;
 
-const struct i915_oa_reg i915_oa_l3_4_b_counter_config_bdw[] = {
+static int select_l3_3_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_l3_3;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_l3_3);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_l3_3;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_l3_3);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_l3_3;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_l3_3);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_l3_4[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2142,9 +2486,8 @@ const struct i915_oa_reg i915_oa_l3_4_b_counter_config_bdw[] = {
 	{ 0x27a8, 0x00000402 },
 	{ 0x27ac, 0x0000fd3f },
 };
-const int i915_oa_l3_4_b_counter_config_bdw_len = 22;
 
-const struct i915_oa_reg i915_oa_l3_4_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_l3_4[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2153,9 +2496,8 @@ const struct i915_oa_reg i915_oa_l3_4_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_l3_4_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_l3_4_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_l3_4[] = {
 	{ 0x9888, 0x121a0340 },
 	{ 0x9888, 0x103f0017 },
 	{ 0x9888, 0x123f0020 },
@@ -2248,9 +2590,35 @@ const struct i915_oa_reg i915_oa_l3_4_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800044 },
 };
-const int i915_oa_l3_4_mux_config_bdw_len = 91;
 
-const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_b_counter_config_bdw[] = {
+static int select_l3_4_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_l3_4;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_l3_4);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_l3_4;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_l3_4);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_l3_4;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_l3_4);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_rasterizer_and_pixel_backend[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2270,9 +2638,8 @@ const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_b_counter_config_b
 	{ 0x2798, 0x00000018 },
 	{ 0x279c, 0x0000fffc },
 };
-const int i915_oa_rasterizer_and_pixel_backend_b_counter_config_bdw_len = 18;
 
-const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_rasterizer_and_pixel_backend[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2281,9 +2648,8 @@ const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_flex_eu_config_bdw
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_rasterizer_and_pixel_backend_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_rasterizer_and_pixel_backend[] = {
 	{ 0x9888, 0x143b000e },
 	{ 0x9888, 0x043c55c0 },
 	{ 0x9888, 0x0a1e0280 },
@@ -2397,9 +2763,35 @@ const struct i915_oa_reg i915_oa_rasterizer_and_pixel_backend_mux_config_bdw[] =
 	{ 0x9888, 0x3f800000 },
 	{ 0x9888, 0x41800840 },
 };
-const int i915_oa_rasterizer_and_pixel_backend_mux_config_bdw_len = 112;
 
-const struct i915_oa_reg i915_oa_sampler_1_b_counter_config_bdw[] = {
+static int select_rasterizer_and_pixel_backend_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_rasterizer_and_pixel_backend;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_rasterizer_and_pixel_backend);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_rasterizer_and_pixel_backend;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_rasterizer_and_pixel_backend);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_rasterizer_and_pixel_backend;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_rasterizer_and_pixel_backend);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_sampler_1[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2413,9 +2805,8 @@ const struct i915_oa_reg i915_oa_sampler_1_b_counter_config_bdw[] = {
 	{ 0x2780, 0x00000c00 },
 	{ 0x2784, 0x0000fe7f },
 };
-const int i915_oa_sampler_1_b_counter_config_bdw_len = 12;
 
-const struct i915_oa_reg i915_oa_sampler_1_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_sampler_1[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2424,9 +2815,8 @@ const struct i915_oa_reg i915_oa_sampler_1_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_sampler_1_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_sampler_1_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_sampler_1[] = {
 	{ 0x9888, 0x18921400 },
 	{ 0x9888, 0x149500ab },
 	{ 0x9888, 0x18b21400 },
@@ -2552,9 +2942,35 @@ const struct i915_oa_reg i915_oa_sampler_1_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800c02 },
 };
-const int i915_oa_sampler_1_mux_config_bdw_len = 124;
 
-const struct i915_oa_reg i915_oa_sampler_2_b_counter_config_bdw[] = {
+static int select_sampler_1_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_sampler_1;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_sampler_1);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_sampler_1;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_sampler_1);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_sampler_1;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_sampler_1);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_sampler_2[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2568,9 +2984,8 @@ const struct i915_oa_reg i915_oa_sampler_2_b_counter_config_bdw[] = {
 	{ 0x2780, 0x00000c00 },
 	{ 0x2784, 0x0000fe7f },
 };
-const int i915_oa_sampler_2_b_counter_config_bdw_len = 12;
 
-const struct i915_oa_reg i915_oa_sampler_2_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_sampler_2[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2579,9 +2994,8 @@ const struct i915_oa_reg i915_oa_sampler_2_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_sampler_2_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_sampler_2_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_sampler_2[] = {
 	{ 0x9888, 0x18121400 },
 	{ 0x9888, 0x141500ab },
 	{ 0x9888, 0x18321400 },
@@ -2695,9 +3109,35 @@ const struct i915_oa_reg i915_oa_sampler_2_mux_config_bdw[] = {
 	{ 0x9888, 0x4f800000 },
 	{ 0x9888, 0x41800c02 },
 };
-const int i915_oa_sampler_2_mux_config_bdw_len = 112;
 
-const struct i915_oa_reg i915_oa_tdl_1_b_counter_config_bdw[] = {
+static int select_sampler_2_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_sampler_2;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_sampler_2);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_sampler_2;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_sampler_2);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_sampler_2;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_sampler_2);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_tdl_1[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2717,9 +3157,8 @@ const struct i915_oa_reg i915_oa_tdl_1_b_counter_config_bdw[] = {
 	{ 0x2798, 0x00000000 },
 	{ 0x279c, 0x0000fff9 },
 };
-const int i915_oa_tdl_1_b_counter_config_bdw_len = 18;
 
-const struct i915_oa_reg i915_oa_tdl_1_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_tdl_1[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2728,9 +3167,8 @@ const struct i915_oa_reg i915_oa_tdl_1_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_tdl_1_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_tdl_1_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_tdl_1[] = {
 	{ 0x9888, 0x16154d60 },
 	{ 0x9888, 0x16352e60 },
 	{ 0x9888, 0x16554d60 },
@@ -2881,9 +3319,35 @@ const struct i915_oa_reg i915_oa_tdl_1_mux_config_bdw[] = {
 	{ 0x9888, 0x3f8014a4 },
 	{ 0x9888, 0x41801042 },
 };
-const int i915_oa_tdl_1_mux_config_bdw_len = 149;
 
-const struct i915_oa_reg i915_oa_tdl_2_b_counter_config_bdw[] = {
+static int select_tdl_1_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_tdl_1;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_tdl_1);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_tdl_1;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_tdl_1);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_tdl_1;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_tdl_1);
+
+        return 0;
+}
+
+static const struct i915_oa_reg b_counter_config_tdl_2[] = {
 	{ 0x2740, 0x00000000 },
 	{ 0x2744, 0x00800000 },
 	{ 0x2710, 0x00000000 },
@@ -2903,9 +3367,8 @@ const struct i915_oa_reg i915_oa_tdl_2_b_counter_config_bdw[] = {
 	{ 0x2798, 0x00000002 },
 	{ 0x279c, 0x0000fffd },
 };
-const int i915_oa_tdl_2_b_counter_config_bdw_len = 18;
 
-const struct i915_oa_reg i915_oa_tdl_2_flex_eu_config_bdw[] = {
+static const struct i915_oa_reg flex_eu_config_tdl_2[] = {
 	{ 0xE458, 0x00005004 },
 	{ 0xE558, 0x00010003 },
 	{ 0xE658, 0x00012011 },
@@ -2914,9 +3377,8 @@ const struct i915_oa_reg i915_oa_tdl_2_flex_eu_config_bdw[] = {
 	{ 0xE55c, 0x00053052 },
 	{ 0xE65c, 0x00055054 },
 };
-const int i915_oa_tdl_2_flex_eu_config_bdw_len = 7;
 
-const struct i915_oa_reg i915_oa_tdl_2_mux_config_bdw[] = {
+static const struct i915_oa_reg mux_config_tdl_2[] = {
 	{ 0x9888, 0x16150000 },
 	{ 0x9888, 0x16350000 },
 	{ 0x9888, 0x16550000 },
@@ -3071,4 +3533,74 @@ const struct i915_oa_reg i915_oa_tdl_2_mux_config_bdw[] = {
 	{ 0x9888, 0x3f800002 },
 	{ 0x9888, 0x41800c62 },
 };
-const int i915_oa_tdl_2_mux_config_bdw_len = 153;
+
+static int select_tdl_2_config(struct drm_i915_private *dev_priv)
+{
+        dev_priv->perf.oa.mux_regs = NULL;
+        dev_priv->perf.oa.mux_regs_len = 0;
+        dev_priv->perf.oa.b_counter_regs = NULL;
+        dev_priv->perf.oa.b_counter_regs_len = 0;
+        dev_priv->perf.oa.flex_regs = NULL;
+        dev_priv->perf.oa.flex_regs_len = 0;
+
+        dev_priv->perf.oa.mux_regs =
+                mux_config_tdl_2;
+        dev_priv->perf.oa.mux_regs_len =
+                ARRAY_SIZE(mux_config_tdl_2);
+
+        dev_priv->perf.oa.b_counter_regs =
+                b_counter_config_tdl_2;
+        dev_priv->perf.oa.b_counter_regs_len =
+                ARRAY_SIZE(b_counter_config_tdl_2);
+
+        dev_priv->perf.oa.flex_regs =
+                flex_eu_config_tdl_2;
+        dev_priv->perf.oa.flex_regs_len =
+                ARRAY_SIZE(flex_eu_config_tdl_2);
+
+        return 0;
+}
+
+int i915_oa_select_metric_set_bdw(struct drm_i915_private *dev_priv)
+{
+        switch (dev_priv->perf.oa.metrics_set) {
+        case I915_OA_METRICS_SET_3D:
+                return select_3d_config(dev_priv);
+        case I915_OA_METRICS_SET_COMPUTE:
+                return select_compute_config(dev_priv);
+        case I915_OA_METRICS_SET_RENDER_PIPE_PROFILE:
+                return select_render_pipe_profile_config(dev_priv);
+        case I915_OA_METRICS_SET_MEMORY_READS:
+                return select_memory_reads_config(dev_priv);
+        case I915_OA_METRICS_SET_MEMORY_WRITES:
+                return select_memory_writes_config(dev_priv);
+        case I915_OA_METRICS_SET_COMPUTE_EXTENDED:
+                return select_compute_extended_config(dev_priv);
+        case I915_OA_METRICS_SET_COMPUTE_L3_CACHE:
+                return select_compute_l3_cache_config(dev_priv);
+        case I915_OA_METRICS_SET_DATA_PORT_READS_COALESCING:
+                return select_data_port_reads_coalescing_config(dev_priv);
+        case I915_OA_METRICS_SET_DATA_PORT_WRITES_COALESCING:
+                return select_data_port_writes_coalescing_config(dev_priv);
+        case I915_OA_METRICS_SET_L3_1:
+                return select_l3_1_config(dev_priv);
+        case I915_OA_METRICS_SET_L3_2:
+                return select_l3_2_config(dev_priv);
+        case I915_OA_METRICS_SET_L3_3:
+                return select_l3_3_config(dev_priv);
+        case I915_OA_METRICS_SET_L3_4:
+                return select_l3_4_config(dev_priv);
+        case I915_OA_METRICS_SET_RASTERIZER_AND_PIXEL_BACKEND:
+                return select_rasterizer_and_pixel_backend_config(dev_priv);
+        case I915_OA_METRICS_SET_SAMPLER_1:
+                return select_sampler_1_config(dev_priv);
+        case I915_OA_METRICS_SET_SAMPLER_2:
+                return select_sampler_2_config(dev_priv);
+        case I915_OA_METRICS_SET_TDL_1:
+                return select_tdl_1_config(dev_priv);
+        case I915_OA_METRICS_SET_TDL_2:
+                return select_tdl_2_config(dev_priv);
+        default:
+                return -ENODEV;
+        }
+}
