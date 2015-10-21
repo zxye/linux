@@ -1074,9 +1074,8 @@ void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 	mutex_unlock(&dev_priv->perf.lock);
 }
 
-static void gen8_legacy_ctx_switch_unlocked(struct drm_i915_gem_request *req)
+static void gen8_legacy_ctx_switch_unlocked(struct intel_engine_cs *ring)
 {
-	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
 	const struct i915_oa_reg *flex_regs = dev_priv->perf.oa.flex_regs;
 	int n_flex_regs = dev_priv->perf.oa.flex_regs_len;
@@ -1110,9 +1109,8 @@ static void gen8_legacy_ctx_switch_unlocked(struct drm_i915_gem_request *req)
 	atomic_set(&ring->oa_state_dirty, false);
 }
 
-void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req)
+void i915_oa_legacy_ctx_switch_notify(struct intel_engine_cs *ring)
 {
-	struct intel_engine_cs *ring = req->ring;
 	struct drm_i915_private *dev_priv = ring->dev->dev_private;
 
 	if (!dev_priv->perf.initialized)
@@ -1135,7 +1133,7 @@ void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req)
 		 * unit has been disabled since oa_state_dirty was
 		 * last set.
 		 */
-		dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked(req);
+		dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked(ring);
 	}
 }
 

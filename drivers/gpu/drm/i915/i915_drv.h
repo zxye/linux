@@ -1696,7 +1696,7 @@ struct i915_oa_ops {
 	void (*update_oacontrol)(struct drm_i915_private *dev_priv);
 	void (*update_specific_hw_ctx_id)(struct drm_i915_private *dev_priv,
 					  u32 ctx_id);
-	void (*legacy_ctx_switch_unlocked)(struct drm_i915_gem_request *req);
+	void (*legacy_ctx_switch_unlocked)(struct intel_engine_cs *ring);
 	void (*read)(struct i915_perf_event *event,
 		     struct i915_perf_read_state *read_state);
 	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
@@ -3192,7 +3192,7 @@ int i915_perf_open_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file);
 void i915_oa_context_pin_notify(struct drm_i915_private *dev_priv,
 				struct intel_context *context);
-void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req);
+void i915_oa_legacy_ctx_switch_notify(struct intel_engine_cs *ring);
 void i915_oa_update_reg_state(struct intel_engine_cs *ring, uint32_t *reg_state);
 
 /* i915_gem_evict.c */

@@ -803,7 +803,7 @@ done:
 		}
 	}
 
-	i915_oa_legacy_ctx_switch_notify(req);
+	i915_oa_legacy_ctx_switch_notify(ring);
 
 	return 0;
 
