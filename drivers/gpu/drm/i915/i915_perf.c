@@ -1085,7 +1085,7 @@ static void gen8_legacy_ctx_switch_unlocked(struct intel_engine_cs *ring)
 	if (!atomic_read(&ring->oa_state_dirty))
 		return;
 
-	ret = intel_ring_begin(req, n_flex_regs * 2 + 4);
+	ret = intel_ring_begin(ring, n_flex_regs * 2 + 4);
 	if (ret)
 		return;
 
