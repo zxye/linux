@@ -24,6 +24,8 @@
  *
  */
 
+#include <linux/sysfs.h>
+
 #include "i915_drv.h"
 
 enum metric_set_id {
@@ -2403,4 +2405,439 @@ int i915_oa_select_metric_set_skl(struct drm_i915_private *dev_priv)
         default:
                 return -ENODEV;
         }
+}
+
+static ssize_t
+show_render_basic_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_RENDER_BASIC);
+}
+
+static struct device_attribute dev_attr_render_basic_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_render_basic_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_render_basic[] = {
+        &dev_attr_render_basic_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_render_basic = {
+        .name = "fdfc01cc-e28e-423a-aae0-b5ed5d4d7a9f",
+        .attrs =  attrs_render_basic,
+};
+
+static ssize_t
+show_compute_basic_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_COMPUTE_BASIC);
+}
+
+static struct device_attribute dev_attr_compute_basic_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_compute_basic_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_compute_basic[] = {
+        &dev_attr_compute_basic_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_compute_basic = {
+        .name = "c9c7ace5-614a-4f8e-90c7-30064c36cad2",
+        .attrs =  attrs_compute_basic,
+};
+
+static ssize_t
+show_render_pipe_profile_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_RENDER_PIPE_PROFILE);
+}
+
+static struct device_attribute dev_attr_render_pipe_profile_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_render_pipe_profile_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_render_pipe_profile[] = {
+        &dev_attr_render_pipe_profile_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_render_pipe_profile = {
+        .name = "99797dc2-b48f-4d83-b973-613cff01202b",
+        .attrs =  attrs_render_pipe_profile,
+};
+
+static ssize_t
+show_memory_reads_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_MEMORY_READS);
+}
+
+static struct device_attribute dev_attr_memory_reads_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_memory_reads_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_memory_reads[] = {
+        &dev_attr_memory_reads_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_memory_reads = {
+        .name = "afa148ea-77fb-48ee-b8f8-e5e971ecf589",
+        .attrs =  attrs_memory_reads,
+};
+
+static ssize_t
+show_memory_writes_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_MEMORY_WRITES);
+}
+
+static struct device_attribute dev_attr_memory_writes_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_memory_writes_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_memory_writes[] = {
+        &dev_attr_memory_writes_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_memory_writes = {
+        .name = "bfce7061-e6f1-4a78-bed8-c9cc69af70f9",
+        .attrs =  attrs_memory_writes,
+};
+
+static ssize_t
+show_compute_extended_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_COMPUTE_EXTENDED);
+}
+
+static struct device_attribute dev_attr_compute_extended_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_compute_extended_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_compute_extended[] = {
+        &dev_attr_compute_extended_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_compute_extended = {
+        .name = "c35ddcab-b1f2-452f-969a-a8209d531a00",
+        .attrs =  attrs_compute_extended,
+};
+
+static ssize_t
+show_compute_l3_cache_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_COMPUTE_L3_CACHE);
+}
+
+static struct device_attribute dev_attr_compute_l3_cache_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_compute_l3_cache_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_compute_l3_cache[] = {
+        &dev_attr_compute_l3_cache_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_compute_l3_cache = {
+        .name = "2b0d0c83-706a-4cb6-b55e-d6bcf51fa6d3",
+        .attrs =  attrs_compute_l3_cache,
+};
+
+static ssize_t
+show_hdc_and_sf_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_HDC_AND_SF);
+}
+
+static struct device_attribute dev_attr_hdc_and_sf_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_hdc_and_sf_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_hdc_and_sf[] = {
+        &dev_attr_hdc_and_sf_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_hdc_and_sf = {
+        .name = "d084f6a9-f706-4b74-b98c-65daa5340517",
+        .attrs =  attrs_hdc_and_sf,
+};
+
+static ssize_t
+show_l3_1_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_L3_1);
+}
+
+static struct device_attribute dev_attr_l3_1_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_l3_1_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_l3_1[] = {
+        &dev_attr_l3_1_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_l3_1 = {
+        .name = "c7ed493c-54ff-4152-baf4-07e31e7a24cb",
+        .attrs =  attrs_l3_1,
+};
+
+static ssize_t
+show_l3_2_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_L3_2);
+}
+
+static struct device_attribute dev_attr_l3_2_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_l3_2_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_l3_2[] = {
+        &dev_attr_l3_2_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_l3_2 = {
+        .name = "43ad9300-198a-4734-8f3a-2a2151b9dab6",
+        .attrs =  attrs_l3_2,
+};
+
+static ssize_t
+show_l3_3_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_L3_3);
+}
+
+static struct device_attribute dev_attr_l3_3_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_l3_3_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_l3_3[] = {
+        &dev_attr_l3_3_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_l3_3 = {
+        .name = "ccfce3f2-6c63-4630-a043-f2a0243fed8f",
+        .attrs =  attrs_l3_3,
+};
+
+static ssize_t
+show_rasterizer_and_pixel_backend_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_RASTERIZER_AND_PIXEL_BACKEND);
+}
+
+static struct device_attribute dev_attr_rasterizer_and_pixel_backend_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_rasterizer_and_pixel_backend_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_rasterizer_and_pixel_backend[] = {
+        &dev_attr_rasterizer_and_pixel_backend_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_rasterizer_and_pixel_backend = {
+        .name = "2e564b28-98fa-42a0-8bbc-7915de3cc03c",
+        .attrs =  attrs_rasterizer_and_pixel_backend,
+};
+
+static ssize_t
+show_sampler_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_SAMPLER);
+}
+
+static struct device_attribute dev_attr_sampler_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_sampler_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_sampler[] = {
+        &dev_attr_sampler_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_sampler = {
+        .name = "a305533f-7e36-4fb6-8749-c6280bce3457",
+        .attrs =  attrs_sampler,
+};
+
+static ssize_t
+show_tdl_1_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_TDL_1);
+}
+
+static struct device_attribute dev_attr_tdl_1_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_tdl_1_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_tdl_1[] = {
+        &dev_attr_tdl_1_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_tdl_1 = {
+        .name = "34ecd59f-6b52-4004-916f-afe9530a0442",
+        .attrs =  attrs_tdl_1,
+};
+
+static ssize_t
+show_tdl_2_id(struct device *kdev, struct device_attribute *attr, char *buf)
+{
+        return sprintf(buf, "%d\n", METRIC_SET_ID_TDL_2);
+}
+
+static struct device_attribute dev_attr_tdl_2_id = {
+        .attr = { .name = "id", .mode = S_IRUGO },
+        .show = show_tdl_2_id,
+        .store = NULL,
+};
+
+static struct attribute *attrs_tdl_2[] = {
+        &dev_attr_tdl_2_id.attr,
+        NULL,
+};
+
+static struct attribute_group group_tdl_2 = {
+        .name = "ee1990d9-6e93-4c7c-aa9e-b40e1ec4d41b",
+        .attrs =  attrs_tdl_2,
+};
+
+int
+i915_perf_init_sysfs_skl(struct drm_i915_private *dev_priv)
+{
+        int ret;
+
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_render_basic);
+        if (ret)
+                goto error_render_basic;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_compute_basic);
+        if (ret)
+                goto error_compute_basic;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_render_pipe_profile);
+        if (ret)
+                goto error_render_pipe_profile;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_memory_reads);
+        if (ret)
+                goto error_memory_reads;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_memory_writes);
+        if (ret)
+                goto error_memory_writes;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_compute_extended);
+        if (ret)
+                goto error_compute_extended;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_compute_l3_cache);
+        if (ret)
+                goto error_compute_l3_cache;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_hdc_and_sf);
+        if (ret)
+                goto error_hdc_and_sf;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_l3_1);
+        if (ret)
+                goto error_l3_1;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_l3_2);
+        if (ret)
+                goto error_l3_2;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_l3_3);
+        if (ret)
+                goto error_l3_3;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_rasterizer_and_pixel_backend);
+        if (ret)
+                goto error_rasterizer_and_pixel_backend;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_sampler);
+        if (ret)
+                goto error_sampler;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_tdl_1);
+        if (ret)
+                goto error_tdl_1;
+        ret = sysfs_create_group(dev_priv->perf.metrics_kobj, &group_tdl_2);
+        if (ret)
+                goto error_tdl_2;
+
+        return 0;
+
+error_tdl_2:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_tdl_1);
+error_tdl_1:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_sampler);
+error_sampler:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_rasterizer_and_pixel_backend);
+error_rasterizer_and_pixel_backend:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_3);
+error_l3_3:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_2);
+error_l3_2:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_1);
+error_l3_1:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_hdc_and_sf);
+error_hdc_and_sf:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_l3_cache);
+error_compute_l3_cache:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_extended);
+error_compute_extended:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_memory_writes);
+error_memory_writes:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_memory_reads);
+error_memory_reads:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_render_pipe_profile);
+error_render_pipe_profile:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_basic);
+error_compute_basic:
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_render_basic);
+error_render_basic:
+        return ret;
+}
+
+void
+i915_perf_deinit_sysfs_skl(struct drm_i915_private *dev_priv)
+{
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_render_basic);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_basic);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_render_pipe_profile);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_memory_reads);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_memory_writes);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_extended);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_compute_l3_cache);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_hdc_and_sf);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_1);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_2);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_l3_3);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_rasterizer_and_pixel_backend);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_sampler);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_tdl_1);
+        sysfs_remove_group(dev_priv->perf.metrics_kobj, &group_tdl_2);
 }

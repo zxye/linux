@@ -1565,6 +1565,13 @@ void i915_perf_init(struct drm_device *dev)
 		return;
 
 	dev_priv->perf.sysctl_header = register_sysctl_table(dev_root);
+	if (!dev_priv->perf.sysctl_header)
+		return;
+
+	dev_priv->perf.metrics_kobj =
+		kobject_create_and_add("metrics", &dev->primary->kdev->kobj);
+	if (!dev_priv->perf.metrics_kobj)
+		goto error_sysfs;
 
 	hrtimer_init(&dev_priv->perf.oa.poll_check_timer,
 		     CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -1589,6 +1596,8 @@ void i915_perf_init(struct drm_device *dev)
 
 		dev_priv->perf.oa.n_builtin_sets =
 			i915_oa_n_builtin_metric_sets_hsw;
+
+		i915_perf_init_sysfs_hsw(dev_priv);
 	} else {
 		dev_priv->perf.oa.ops.init_oa_buffer = gen8_init_oa_buffer;
 		dev_priv->perf.oa.ops.oa_enable = gen8_oa_enable;
@@ -1612,6 +1621,9 @@ void i915_perf_init(struct drm_device *dev)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_bdw;
+
+			if (i915_perf_init_sysfs_bdw(dev_priv))
+				goto error_sysfs;
 		} else if (IS_CHERRYVIEW(dev)) {
 			dev_priv->perf.oa.ops.enable_metric_set =
 				chv_enable_metric_set;
@@ -1621,6 +1633,9 @@ void i915_perf_init(struct drm_device *dev)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_chv;
+
+			if (i915_perf_init_sysfs_chv(dev_priv))
+				goto error_sysfs;
 		} else if (IS_SKYLAKE(dev)) {
 			dev_priv->perf.oa.ops.enable_metric_set =
 				skl_enable_metric_set;
@@ -1630,10 +1645,18 @@ void i915_perf_init(struct drm_device *dev)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x3de;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_skl;
+
+			if (i915_perf_init_sysfs_skl(dev_priv))
+				goto error_sysfs;
 		}
 	}
 
 	dev_priv->perf.initialized = true;
+
+	return;
+
+error_sysfs:
+	unregister_sysctl_table(dev_priv->perf.sysctl_header);
 }
 
 void i915_perf_fini(struct drm_device *dev)
@@ -1642,6 +1665,18 @@ void i915_perf_fini(struct drm_device *dev)
 
 	if (!dev_priv->perf.initialized)
 		return;
+
+	if (IS_HASWELL(dev))
+		i915_perf_deinit_sysfs_hsw(dev_priv);
+	else if (IS_BROADWELL(dev))
+		i915_perf_deinit_sysfs_bdw(dev_priv);
+	else if (IS_CHERRYVIEW(dev))
+		i915_perf_deinit_sysfs_chv(dev_priv);
+	else if (IS_SKYLAKE(dev))
+		i915_perf_deinit_sysfs_skl(dev_priv);
+
+	kobject_put(dev_priv->perf.metrics_kobj);
+	dev_priv->perf.metrics_kobj = NULL;
 
 	unregister_sysctl_table(dev_priv->perf.sysctl_header);
 

@@ -31,4 +31,8 @@ extern int i915_oa_n_builtin_metric_sets_skl;
 
 extern int i915_oa_select_metric_set_skl(struct drm_i915_private *dev_priv);
 
+extern int i915_perf_init_sysfs_skl(struct drm_i915_private *dev_priv);
+
+extern void i915_perf_deinit_sysfs_skl(struct drm_i915_private *dev_priv);
+
 #endif
