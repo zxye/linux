@@ -2081,6 +2081,8 @@ struct drm_i915_private {
 	struct {
 		bool initialized;
 
+		struct kobject *metrics_kobj;
+
 		struct mutex lock;
 		struct list_head streams;
 
