@@ -960,6 +960,9 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 	case I915_CONTEXT_PARAM_NO_ZEROMAP:
 		args->value = ctx->flags & CONTEXT_NO_ZEROMAP;
 		break;
+	case I915_CONTEXT_PARAM_GLOBAL_ID:
+		args->value = ctx->global_id;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
