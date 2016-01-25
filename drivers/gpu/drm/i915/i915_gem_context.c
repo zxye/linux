@@ -1078,6 +1078,9 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 	case I915_CONTEXT_PARAM_NO_ERROR_CAPTURE:
 		args->value = !!(ctx->flags & CONTEXT_NO_ERROR_CAPTURE);
 		break;
+	case I915_CONTEXT_PARAM_HW_ID:
+		args->value = ctx->hw_id;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
