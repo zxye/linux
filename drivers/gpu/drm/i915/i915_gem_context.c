@@ -987,6 +987,9 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 		else
 			args->value = to_i915(dev)->ggtt.base.total;
 		break;
+	case I915_CONTEXT_PARAM_GLOBAL_ID:
+		args->value = ctx->global_id;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
