@@ -1062,6 +1062,9 @@ int i915_gem_context_getparam_ioctl(struct drm_device *dev, void *data,
 	case I915_CONTEXT_PARAM_BANNABLE:
 		args->value = i915_gem_context_is_bannable(ctx);
 		break;
+	case I915_CONTEXT_PARAM_HW_ID:
+		args->value = ctx->hw_id;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
