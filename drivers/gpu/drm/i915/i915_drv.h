@@ -2141,7 +2141,7 @@ struct drm_i915_private {
 		spinlock_t hook_lock;
 
 		struct hrtimer poll_check_timer;
-		struct i915_perf_stream *exclusive_stream;
+		struct i915_perf_stream *ring_stream[I915_NUM_RINGS];
 		wait_queue_head_t poll_wq[I915_NUM_RINGS];
 
 		struct {
