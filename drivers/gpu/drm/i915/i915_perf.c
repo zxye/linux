@@ -1382,7 +1382,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 		 * switches since it's not-uncommon for periodic samples to
 		 * identify a switch before any 'context switch' report.
 		 */
-		if (!dev_priv->perf.exclusive_stream->ctx ||
+		if (!stream->ctx ||
 		    dev_priv->perf.oa.specific_ctx_id == ctx_id ||
 		    (dev_priv->perf.oa.oa_buffer.last_ctx_id ==
 		     dev_priv->perf.oa.specific_ctx_id) ||
@@ -1391,7 +1391,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 			/* While filtering for a single context we avoid
 			 * leaking the IDs of other contexts.
 			 */
-			if (dev_priv->perf.exclusive_stream->ctx &&
+			if (stream->ctx &&
 			    dev_priv->perf.oa.specific_ctx_id != ctx_id) {
 				report32[2] = INVALID_CTX_ID;
 			}
@@ -2190,7 +2190,7 @@ static void i915_engine_stream_destroy(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 
-	if (WARN_ON(stream != dev_priv->perf.exclusive_stream))
+	if (WARN_ON(stream != dev_priv->perf.engine_stream[stream->engine]))
 		return;
 
 	if (stream->using_oa) {
@@ -2208,7 +2208,7 @@ static void i915_engine_stream_destroy(struct i915_perf_stream *stream)
 	if (stream->cs_mode)
 		free_command_stream_buf(dev_priv, stream->engine);
 
-	dev_priv->perf.exclusive_stream = NULL;
+	dev_priv->perf.engine_stream[stream->engine] = NULL;
 }
 
 static void gen7_init_oa_buffer(struct drm_i915_private *dev_priv)
@@ -2755,10 +2755,10 @@ static void gen7_update_oacontrol_locked(struct drm_i915_private *dev_priv)
 {
 	assert_spin_locked(&dev_priv->perf.hook_lock);
 
-	if (dev_priv->perf.exclusive_stream->state !=
+	if (dev_priv->perf.engine_stream[RCS]->state !=
 					I915_PERF_STREAM_DISABLED) {
 		struct i915_gem_context *ctx =
-			dev_priv->perf.exclusive_stream->ctx;
+			dev_priv->perf.engine_stream[RCS]->ctx;
 		u32 ctx_id = dev_priv->perf.oa.specific_ctx_id;
 
 		bool periodic = dev_priv->perf.oa.periodic;
@@ -2931,8 +2931,9 @@ static int i915_engine_stream_init(struct i915_perf_stream *stream,
 	 * counter reports and marshal to the appropriate client
 	 * we currently only allow exclusive access
 	 */
-	if (dev_priv->perf.exclusive_stream) {
-		DRM_DEBUG("I915 perf stream already in use\n");
+	if (dev_priv->perf.engine_stream[props->engine]) {
+		DRM_DEBUG("I915 perf stream : %d already in use\n",
+				props->engine);
 		return -EBUSY;
 	}
 
@@ -3120,7 +3121,7 @@ static int i915_engine_stream_init(struct i915_perf_stream *stream,
 	}
 
 	stream->ops = &i915_engine_stream_ops;
-	dev_priv->perf.exclusive_stream = stream;
+	dev_priv->perf.engine_stream[stream->engine] = stream;
 
 	return 0;
 
@@ -3343,24 +3344,28 @@ static ssize_t i915_perf_read(struct file *file,
 	return ret;
 }
 
-static enum hrtimer_restart poll_check_timer_cb(struct hrtimer *hrtimer)
+static void wake_up_perf_streams(void *data, async_cookie_t cookie)
 {
+	struct drm_i915_private *dev_priv = data;
 	struct i915_perf_stream *stream;
-	struct drm_i915_private *dev_priv =
-		container_of(hrtimer, typeof(*dev_priv),
-			     perf.poll_check_timer);
 
-	/* No need to protect the streams list here, since the hrtimer is
-	 * disabled before the stream is removed from list, and currently a
-	 * single exclusive_stream is supported.
-	 * XXX: revisit this when multiple concurrent streams are supported.
-	 */
+	mutex_lock(&dev_priv->perf.streams_lock);
 	list_for_each_entry(stream, &dev_priv->perf.streams, link) {
 		if (stream_have_data_unlocked(stream)) {
 			dev_priv->perf.pollin[stream->engine] = true;
 			wake_up(&dev_priv->perf.poll_wq[stream->engine]);
 		}
 	}
+	mutex_unlock(&dev_priv->perf.streams_lock);
+}
+
+static enum hrtimer_restart poll_check_timer_cb(struct hrtimer *hrtimer)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(hrtimer, typeof(*dev_priv),
+			     perf.poll_check_timer);
+
+	async_schedule(wake_up_perf_streams, dev_priv);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(POLL_PERIOD));
 
