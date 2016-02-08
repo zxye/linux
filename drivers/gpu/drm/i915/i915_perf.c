@@ -1061,7 +1061,7 @@ static void i915_perf_stream_destroy(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 
-	BUG_ON(stream != dev_priv->perf.exclusive_stream);
+	BUG_ON(stream != dev_priv->perf.exclusive_stream[stream->ring_id]);
 
 	if (stream->using_oa) {
 		dev_priv->perf.oa.ops.disable_metric_set(dev_priv);
@@ -1075,7 +1075,7 @@ static void i915_perf_stream_destroy(struct i915_perf_stream *stream)
 	if (stream->cs_mode)
 		free_command_stream_buf(dev_priv, stream->ring_id);
 
-	dev_priv->perf.exclusive_stream = NULL;
+	dev_priv->perf.exclusive_stream[stream->ring_id] = NULL;
 }
 
 static void *vmap_oa_buffer(struct drm_i915_gem_object *obj)
@@ -1434,17 +1434,17 @@ static void gen7_update_oacontrol_locked(struct drm_i915_private *dev_priv)
 {
 	assert_spin_locked(&dev_priv->perf.hook_lock);
 
-	if (dev_priv->perf.exclusive_stream->enabled) {
+	if (dev_priv->perf.exclusive_stream[RCS]->enabled) {
 		unsigned long ctx_id = 0;
 		bool pinning_ok = false;
 
-		if (dev_priv->perf.exclusive_stream->ctx &&
+		if (dev_priv->perf.exclusive_stream[RCS]->ctx &&
 		    dev_priv->perf.oa.specific_ctx_id) {
 			ctx_id = dev_priv->perf.oa.specific_ctx_id;
 			pinning_ok = true;
 		}
 
-		if (dev_priv->perf.exclusive_stream->ctx == NULL ||
+		if (dev_priv->perf.exclusive_stream[RCS]->ctx == NULL ||
 		    pinning_ok) {
 			bool periodic = dev_priv->perf.oa.periodic;
 			u32 period_exponent = dev_priv->perf.oa.period_exponent;
@@ -1556,14 +1556,6 @@ static int i915_perf_stream_init(struct i915_perf_stream *stream,
 						      SAMPLE_TS);
 	int ret;
 
-	/* To avoid the complexity of having to accurately filter
-	 * counter reports and marshal to the appropriate client
-	 * we currently only allow exclusive access */
-	if (dev_priv->perf.exclusive_stream) {
-		DRM_ERROR("Stream already in use\n");
-		return -EBUSY;
-	}
-
 	/* Ctx Id can be sampled in HSW only through command streamer mode */
 	if (IS_HASWELL(dev_priv->dev) &&
 	    (props->sample_flags & SAMPLE_CTX_ID) && !props->cs_mode) {
@@ -1576,6 +1568,13 @@ static int i915_perf_stream_init(struct i915_perf_stream *stream,
 
 	if (require_oa_unit) {
 		int format_size;
+
+		/* Only allow exclusive access per stream */
+		if (dev_priv->perf.exclusive_stream[RCS]) {
+			DRM_ERROR("Stream:0 already in use\n");
+			return -EBUSY;
+		}
+
 		if (!dev_priv->perf.oa.ops.init_oa_buffer) {
 			DRM_ERROR("OA unit not supported\n");
 			return -ENODEV;
@@ -1673,6 +1672,13 @@ static int i915_perf_stream_init(struct i915_perf_stream *stream,
 	}
 
 	if (props->cs_mode) {
+		/* Only allow exclusive access per stream */
+		if (dev_priv->perf.exclusive_stream[props->ring_id]) {
+			DRM_ERROR("Stream:%d already in use\n", props->ring_id);
+			ret = -EBUSY;
+			goto cs_error;
+		}
+
 		/*
 		 * The only time we should allow enabling CS mode if it's not
 		 * strictly required, is if SAMPLE_CTX_ID has been requested
@@ -1709,7 +1715,7 @@ static int i915_perf_stream_init(struct i915_perf_stream *stream,
 			goto cs_error;
 	}
 
-	dev_priv->perf.exclusive_stream = stream;
+	dev_priv->perf.exclusive_stream[stream->ring_id] = stream;
 
 	stream->destroy = i915_perf_stream_destroy;
 	stream->enable = i915_perf_stream_enable;
@@ -1751,8 +1757,8 @@ static void i915_oa_context_pin_notify_locked(struct drm_i915_private *dev_priv,
 	    dev_priv->perf.oa.ops.update_hw_ctx_id_locked == NULL)
 		return;
 
-	if (dev_priv->perf.exclusive_stream &&
-	    dev_priv->perf.exclusive_stream->ctx == context) {
+	if (dev_priv->perf.exclusive_stream[RCS] &&
+	    dev_priv->perf.exclusive_stream[RCS]->ctx == context) {
 		struct drm_i915_gem_object *obj =
 			context->legacy_hw_ctx.rcs_state;
 		u32 ctx_id = i915_gem_obj_ggtt_offset(obj);
@@ -1820,8 +1826,8 @@ void i915_oa_legacy_ctx_switch_notify(struct drm_i915_gem_request *req)
 	if (dev_priv->perf.oa.ops.legacy_ctx_switch_unlocked == NULL)
 		return;
 
-	if (dev_priv->perf.exclusive_stream &&
-	    dev_priv->perf.exclusive_stream->enabled) {
+	if (dev_priv->perf.exclusive_stream[RCS] &&
+	    dev_priv->perf.exclusive_stream[RCS]->enabled) {
 
 		/* XXX: We don't take a lock here and this may run
 		 * async with respect to stream methods. Notably we
@@ -1944,23 +1950,26 @@ static ssize_t i915_perf_read(struct file *file,
 	return ret;
 }
 
-static enum hrtimer_restart poll_check_timer_cb(struct hrtimer *hrtimer)
+static void wake_up_perf_streams(void *data, async_cookie_t cookie)
 {
+	struct drm_i915_private *dev_priv = data;
 	struct i915_perf_stream *stream;
 
-	struct drm_i915_private *dev_priv =
-		container_of(hrtimer, typeof(*dev_priv),
-			     perf.poll_check_timer);
-
-	/* No need to protect the streams list here, since the hrtimer is
-	 * disabled before the stream is removed from list, and currently a
-	 * single exclusive_stream is supported.
-	 * XXX: revisit this when multiple concurrent streams are supported.
-	 */
+	mutex_lock(&dev_priv->perf.streams_lock);
 	list_for_each_entry(stream, &dev_priv->perf.streams, link) {
 		if (stream_have_data__unlocked(stream))
 			wake_up(&dev_priv->perf.poll_wq[stream->ring_id]);
 	}
+	mutex_unlock(&dev_priv->perf.streams_lock);
+}
+
+static enum hrtimer_restart poll_check_timer_cb(struct hrtimer *hrtimer)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(hrtimer, typeof(*dev_priv),
+			     perf.poll_check_timer);
+
+	async_schedule(wake_up_perf_streams, dev_priv);
 
 	hrtimer_forward_now(hrtimer, ns_to_ktime(POLL_PERIOD));
 
