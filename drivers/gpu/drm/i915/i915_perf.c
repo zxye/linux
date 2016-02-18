@@ -1059,11 +1059,19 @@ static void append_command_stream_samples(struct i915_perf_stream *stream,
 static bool command_stream_buf_is_empty(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
+	struct i915_perf_cs_data_node *entry = NULL;
+	bool is_empty = true;
 
-	if (stream->cs_mode)
-		return list_empty(&dev_priv->perf.node_list[stream->ring_id]);
-	else
-		return true;
+	if (stream->cs_mode) {
+		entry = list_first_entry_or_null(
+				&dev_priv->perf.node_list[stream->ring_id],
+				struct i915_perf_cs_data_node, link);
+
+		if (entry)
+			is_empty = !i915_gem_request_completed(entry->request,
+								true);
+	}
+	return is_empty;
 }
 
 static bool stream_have_data__unlocked(struct i915_perf_stream *stream)
