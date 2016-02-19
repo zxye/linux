@@ -248,15 +248,13 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 			     (dev_priv->perf.oa.specific_ctx_id !=
 			      dev_priv->perf.oa.oa_buffer.last_ctx_id))) {
 
-
-				if (!append_oa_sample(stream, read_state, report)) {
-					if (n_records && ret == -EFAULT)
-						ret = 0;
-					if (ret > 0)
-						n_records += ret;
-					else
-						break;
-				}
+				ret = append_oa_sample(stream, read_state, report);
+				if (n_records && ret == -EFAULT)
+					ret = 0;
+				if (ret > 0)
+					n_records += ret;
+				else
+					break;
 			}
 		}
 
