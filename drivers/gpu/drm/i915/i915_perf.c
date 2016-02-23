@@ -220,7 +220,8 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 		/* All the report sizes factor neatly into the buffer
 		 * size so we never expect to see a report split
 		 * between the beginning and end of the buffer... */
-		BUG_ON((OA_BUFFER_SIZE - (head & mask)) < report_size);
+		WARN_ONCE((OA_BUFFER_SIZE - (head & mask)) < report_size,
+			  "i915: Misaligned OA head pointer");
 
 		report = oa_buf_base + (head & mask);
 
@@ -231,6 +232,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 			 * bits */
 			ctx_id &= 0xfffff;
 		}
+		WARN_ONCE(ctx_id == 0, "i915: Invalid OA report: zeroed context ID");
 
 		if (dev_priv->perf.oa.exclusive_stream->enabled) {
 
@@ -286,6 +288,7 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 			struct i915_perf_read_state *read_state)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
+	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u32 oastatus;
 	u32 head;
 	u32 tail;
@@ -336,7 +339,12 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 		else if (ret > 0) {
 			n_records += ret;
 
-			I915_WRITE(GEN8_OAHEADPTR, head);
+			/* All the report sizes are a power of two and the
+			 * head should always be incremented by some multiple
+			 * of the report size... */
+			WARN_ONCE(head & (report_size - 1),
+				  "i915: Writing misaligned OA head pointer");
+			I915_WRITE(GEN8_OAHEADPTR, head & GEN8_OAHEADPTR_MASK);
 		}
 	}
 
