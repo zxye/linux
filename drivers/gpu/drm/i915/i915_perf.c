@@ -392,6 +392,12 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 		if (taken < report_size)
 			break;
 
+		/* All the report sizes factor neatly into the buffer
+		 * size so we never expect to see a report split
+		 * between the beginning and end of the buffer... */
+		WARN_ONCE((OA_BUFFER_SIZE - (head & mask)) < report_size,
+			  "i915: Misaligned OA head pointer");
+
 		report = oa_buf_base + (head & mask);
 
 		if (dev_priv->perf.oa.exclusive_stream->enabled) {
@@ -433,6 +439,7 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 			struct i915_perf_read_state *read_state)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
+	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u32 oastatus2;
 	u32 oastatus1;
 	u32 head;
@@ -494,6 +501,11 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 		else if (ret > 0) {
 			n_records += ret;
 
+			/* All the report sizes are a power of two and the
+			 * head should always be incremented by some multiple
+			 * of the report size... */
+			WARN_ONCE(head & (report_size - 1),
+				  "i915: Writing misaligned OA head pointer");
 			I915_WRITE(GEN7_OASTATUS2,
 				   ((head & GEN7_OASTATUS2_HEAD_MASK) |
 				    OA_MEM_SELECT_GGTT));
