@@ -294,8 +294,8 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 
 	WARN_ON(!dev_priv->perf.oa.oa_buffer.addr);
 
-	head = I915_READ(GEN8_OAHEADPTR);
-	tail = I915_READ(GEN8_OATAILPTR);
+	head = I915_READ(GEN8_OAHEADPTR) & GEN8_OAHEADPTR_MASK;
+	tail = I915_READ(GEN8_OATAILPTR) & GEN8_OATAILPTR_MASK;
 	oastatus = I915_READ(GEN8_OASTATUS);
 
 	if (unlikely(oastatus & (GEN8_OASTATUS_OABUFFER_OVERFLOW |
@@ -622,7 +622,8 @@ static void gen8_init_oa_buffer(struct drm_i915_private *dev_priv)
 	I915_WRITE(GEN8_OABUFFER, dev_priv->perf.oa.oa_buffer.gtt_offset |
 		   OABUFFER_SIZE_16M | OA_MEM_SELECT_GGTT);
 	I915_WRITE(GEN8_OATAILPTR,
-		   dev_priv->perf.oa.oa_buffer.gtt_offset);
+		   (dev_priv->perf.oa.oa_buffer.gtt_offset &
+		    GEN8_OATAILPTR_MASK));
 }
 
 static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
