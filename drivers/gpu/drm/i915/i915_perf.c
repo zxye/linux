@@ -433,6 +433,14 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 	head = oastatus2 & GEN7_OASTATUS2_HEAD_MASK;
 	tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
 
+	/* XXX: On Haswell we don't have a safe way to clear these
+	 * status bits while periodic sampling is enabled (while
+	 * the tail pointer is being updated asynchronously) so only
+	 * append one record for each.
+	 */
+	if (dev_priv->perf.oa.periodic)
+		oastatus1 &= ~dev_priv->perf.oa.gen7_latched_oastatus1;
+
 	if (unlikely(oastatus1 & (GEN7_OASTATUS1_OABUFFER_OVERFLOW |
 				  GEN7_OASTATUS1_REPORT_LOST))) {
 
@@ -442,7 +450,8 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 			if (ret <= 0)
 				return ret;
 			n_records += ret;
-			oastatus1 &= ~GEN7_OASTATUS1_OABUFFER_OVERFLOW;
+			dev_priv->perf.oa.gen7_latched_oastatus1 |=
+				GEN7_OASTATUS1_OABUFFER_OVERFLOW;
 		}
 
 		if (oastatus1 & GEN7_OASTATUS1_REPORT_LOST) {
@@ -454,17 +463,10 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 				return ret;
 			else if (ret > 0) {
 				n_records += ret;
-				oastatus1 &= ~GEN7_OASTATUS1_REPORT_LOST;
+				dev_priv->perf.oa.gen7_latched_oastatus1 |=
+					GEN7_OASTATUS1_REPORT_LOST;
 			}
 		}
-
-		/* XXX: This register contains the OA tail pointer
-		 * which may be updated asynchronously while periodic
-		 * sampling is enabled so it's racy to
-		 * read-modify-write like we are here (esp after the
-		 * append/copy_to_user work above.) */
-#warning "WIP: check the correct way to clear OASTATUS1 bits"
-		I915_WRITE(GEN7_OASTATUS1, oastatus1);
 	}
 
 	/* If there is still buffer space */
@@ -1093,6 +1095,11 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	stream->wait_unlocked = i915_oa_wait_unlocked;
 	stream->poll_wait = i915_oa_poll_wait;
 	stream->read = i915_oa_read;
+
+	/* On Haswell we have to track which OASTATUS1 flags we've already
+	 * seen since they can't be cleared while periodic sampling is enabled.
+	 */
+	dev_priv->perf.oa.gen7_latched_oastatus1 = 0;
 
 	dev_priv->perf.oa.exclusive_stream = stream;
 

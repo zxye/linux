@@ -2132,6 +2132,7 @@ struct drm_i915_private {
 
 			u32 ctx_oactxctrl_off;
 			u32 ctx_flexeu0_off;
+			u32 gen7_latched_oastatus1;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
