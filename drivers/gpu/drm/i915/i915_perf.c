@@ -529,7 +529,11 @@ free_oa_buffer(struct drm_i915_private *i915)
 {
 	mutex_lock(&i915->dev->struct_mutex);
 
-	vunmap(i915->perf.oa.oa_buffer.addr);
+	if (HAS_LLC(dev_priv))
+		vunmap(i915->perf.oa.oa_buffer.addr);
+	else
+		iounmap(i915->perf.oa.oa_buffer.addr);
+
 	i915_gem_object_ggtt_unpin(i915->perf.oa.oa_buffer.obj);
 	drm_gem_object_unreference(&i915->perf.oa.oa_buffer.obj->base);
 
@@ -558,32 +562,26 @@ static void i915_oa_stream_destroy(struct i915_perf_stream *stream)
 
 static void *vmap_oa_buffer(struct drm_i915_gem_object *obj)
 {
-	int i;
-	void *addr = NULL;
 	struct sg_page_iter sg_iter;
 	struct page **pages;
+	void *addr = NULL;
+	int i;
 
 	pages = drm_malloc_ab(obj->base.size >> PAGE_SHIFT, sizeof(*pages));
 	if (pages == NULL) {
-		DRM_DEBUG_DRIVER("Failed to get space for pages\n");
-		goto finish;
+		DRM_DEBUG_DRIVER("Failed to get space for oabuffer pages\n");
+		return NULL;
 	}
 
 	i = 0;
-	for_each_sg_page(obj->pages->sgl, &sg_iter, obj->pages->nents, 0) {
-		pages[i] = sg_page_iter_page(&sg_iter);
-		i++;
-	}
+	for_each_sg_page(obj->pages->sgl, &sg_iter, obj->pages->nents, 0)
+		pages[i++] = sg_page_iter_page(&sg_iter);
 
 	addr = vmap(pages, i, 0, PAGE_KERNEL);
-	if (addr == NULL) {
-		DRM_DEBUG_DRIVER("Failed to vmap pages\n");
-		goto finish;
-	}
+	if (addr == NULL)
+		DRM_DEBUG_DRIVER("Failed to vmap oabuffer pages\n");
+	drm_free_large(pages);
 
-finish:
-	if (pages)
-		drm_free_large(pages);
 	return addr;
 }
 
@@ -602,7 +600,9 @@ static void gen7_init_oa_buffer(struct drm_i915_private *dev_priv)
 static void gen8_init_oa_buffer(struct drm_i915_private *dev_priv)
 {
 	I915_WRITE(GEN8_OAHEADPTR,
-		   dev_priv->perf.oa.oa_buffer.gtt_offset);
+		   (dev_priv->perf.oa.oa_buffer.gtt_offset &
+		    GEN8_OAHEADPTR_MASK));
+
 	/* PRM says:
 	 *
 	 *  "This MMIO must be set before the OATAILPTR
@@ -639,13 +639,42 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 	if (ret)
 		goto err_unref;
 
-	/* PreHSW required 512K alignment, HSW requires 16M */
-	ret = i915_gem_obj_ggtt_pin(bo, SZ_16M, 0);
-	if (ret)
-		goto err_unref;
+	if (HAS_LLC(dev_priv)) {
+		ret = i915_gem_obj_ggtt_pin(bo, SZ_16, 0);
+		if (ret)
+			goto err_unref;
+
+		ret = i915_gem_object_set_to_cpu_domain(bo, true);
+		if (ret)
+			goto err_unpin;
+
+		dev_priv->perf.oa.oa_buffer.addr = vmap_oa_buffer(bo);
+		if (dev_priv->perf.oa.oa_buffer.addr == NULL) {
+			ret = -ENOMEM;
+			goto err_unpin;
+		}
+	} else {
+		ret = i915_gem_obj_ggtt_pin(bo, SZ_16, PIN_MAPPABLE);
+		if (ret)
+			goto err_unref;
+
+		ret = i915_gem_object_set_to_gtt_domain(bo, true);
+		if (ret)
+			goto err_unpin;
+
+		/* Access through the GTT requires the device to be awake. */
+		assert_rpm_wakelock_held(dev_priv);
+
+		dev_priv->perf.oa.oa_buffer.addr =
+			ioremap_wc(dev_priv->gtt.mappable_base +
+				   i915_gem_obj_ggtt_offset(bo), SZ_16);
+		if (dev_priv->perf.oa.oa_buffer.addr == NULL) {
+			ret = -EINVAL;
+			goto err_unpin;
+		}
+	}
 
 	dev_priv->perf.oa.oa_buffer.gtt_offset = i915_gem_obj_ggtt_offset(bo);
-	dev_priv->perf.oa.oa_buffer.addr = vmap_oa_buffer(bo);
 
 	dev_priv->perf.oa.ops.init_oa_buffer(dev_priv);
 
@@ -655,6 +684,8 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 
 	goto unlock;
 
+err_unpin:
+	i915_gem_object_ggtt_unpin(bo);
 err_unref:
 	drm_gem_object_unreference(&bo->base);
 
