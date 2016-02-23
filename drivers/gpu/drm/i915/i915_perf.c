@@ -266,7 +266,10 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 
 	*head_ptr = dev_priv->perf.oa.oa_buffer.gtt_offset + head;
 
-	return n_records;
+	if (ret < 0)
+		return ret;
+	else
+		return n_records;
 }
 
 /**
