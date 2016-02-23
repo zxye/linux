@@ -747,6 +747,7 @@ static int hsw_enable_metric_set(struct drm_i915_private *dev_priv)
 		return ret;
 
 	I915_WRITE(GDT_CHICKEN_BITS, GT_NOA_ENABLE);
+	msleep(200);
 
 	/* PRM:
 	 *
@@ -764,8 +765,11 @@ static int hsw_enable_metric_set(struct drm_i915_private *dev_priv)
 
 	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
 		       dev_priv->perf.oa.mux_regs_len);
+	msleep(400);
+
 	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
 		       dev_priv->perf.oa.b_counter_regs_len);
+	msleep(200);
 
 	return 0;
 }
