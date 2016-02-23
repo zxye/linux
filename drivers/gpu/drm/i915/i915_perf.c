@@ -554,23 +554,23 @@ static int i915_oa_read(struct i915_perf_stream *stream,
 }
 
 static void
-free_oa_buffer(struct drm_i915_private *i915)
+free_oa_buffer(struct drm_i915_private *dev_priv)
 {
-	mutex_lock(&i915->dev->struct_mutex);
+	mutex_lock(&dev_priv->dev->struct_mutex);
 
 	if (HAS_LLC(dev_priv))
-		vunmap(i915->perf.oa.oa_buffer.addr);
+		vunmap(dev_priv->perf.oa.oa_buffer.addr);
 	else
-		iounmap(i915->perf.oa.oa_buffer.addr);
+		iounmap(dev_priv->perf.oa.oa_buffer.addr);
 
-	i915_gem_object_ggtt_unpin(i915->perf.oa.oa_buffer.obj);
-	drm_gem_object_unreference(&i915->perf.oa.oa_buffer.obj->base);
+	i915_gem_object_ggtt_unpin(dev_priv->perf.oa.oa_buffer.obj);
+	drm_gem_object_unreference(&dev_priv->perf.oa.oa_buffer.obj->base);
 
-	i915->perf.oa.oa_buffer.obj = NULL;
-	i915->perf.oa.oa_buffer.gtt_offset = 0;
-	i915->perf.oa.oa_buffer.addr = NULL;
+	dev_priv->perf.oa.oa_buffer.obj = NULL;
+	dev_priv->perf.oa.oa_buffer.gtt_offset = 0;
+	dev_priv->perf.oa.oa_buffer.addr = NULL;
 
-	mutex_unlock(&i915->dev->struct_mutex);
+	mutex_unlock(&dev_priv->dev->struct_mutex);
 }
 
 static void i915_oa_stream_destroy(struct i915_perf_stream *stream)
