@@ -860,10 +860,13 @@ static int bdw_enable_metric_set(struct drm_i915_private *dev_priv)
 	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
 		       dev_priv->perf.oa.mux_regs_len);
 	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+	msleep(500);
 	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
 		       dev_priv->perf.oa.b_counter_regs_len);
+	msleep(200);
 
 	configure_all_contexts(dev_priv);
+	msleep(200);
 
 	return 0;
 }
@@ -888,11 +891,14 @@ static int chv_enable_metric_set(struct drm_i915_private *dev_priv)
 	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
 		       dev_priv->perf.oa.mux_regs_len);
 	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+	msleep(500);
 	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
 		       dev_priv->perf.oa.b_counter_regs_len);
 
+	msleep(200);
 	configure_all_contexts(dev_priv);
 
+	msleep(200);
 	return 0;
 }
 
@@ -916,10 +922,13 @@ static int skl_enable_metric_set(struct drm_i915_private *dev_priv)
 	config_oa_regs(dev_priv, dev_priv->perf.oa.mux_regs,
 		       dev_priv->perf.oa.mux_regs_len);
 	I915_WRITE(GDT_CHICKEN_BITS, 0x80);
+	msleep(500);
 	config_oa_regs(dev_priv, dev_priv->perf.oa.b_counter_regs,
 		       dev_priv->perf.oa.b_counter_regs_len);
+	msleep(200);
 
 	configure_all_contexts(dev_priv);
+	msleep(200);
 
 	return 0;
 }
