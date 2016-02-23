@@ -592,6 +592,9 @@ static void gen8_init_oa_buffer(struct drm_i915_private *dev_priv)
 {
 	I915_WRITE(GEN8_OAHEADPTR,
 		   dev_priv->perf.oa.oa_buffer.gtt_offset);
+
+	I915_WRITE(GEN8_OABUFFER_UDW, 0);
+
 	/* PRM says:
 	 *
 	 *  "This MMIO must be set before the OATAILPTR
