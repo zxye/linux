@@ -1128,6 +1128,7 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	if (ret) {
 		intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
 		intel_runtime_pm_put(dev_priv);
+		free_oa_buffer(dev_priv);
 		return ret;
 	}
 
