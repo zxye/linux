@@ -540,13 +540,30 @@ static void i915_oa_rcs_free_requests(struct drm_i915_private *dev_priv)
  * pointers.  A race here could result in a false positive !empty status which
  * is acceptable.
  */
-static bool gen8_oa_buffer_is_empty_fop_unlocked(struct drm_i915_private *dev_priv)
+static int
+gen8_oa_buffer_num_samples_fop_unlocked(struct drm_i915_private *dev_priv,
+					u32 *last_ts)
 {
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
-	u32 head = I915_READ(GEN8_OAHEADPTR);
-	u32 tail = I915_READ(GEN8_OATAILPTR);
+	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.addr;
+	u32 head = I915_READ(GEN8_OAHEADPTR) & GEN8_OAHEADPTR_MASK;
+	u32 tail = I915_READ(GEN8_OATAILPTR) & GEN8_OATAILPTR_MASK;
+	u32 mask = (OA_BUFFER_SIZE - 1);
+	u32 num_samples;
+	u8 *report;
 
-	return OA_TAKEN(tail, head) < report_size;
+	head -= dev_priv->perf.oa.oa_buffer.gtt_offset;
+	tail -= dev_priv->perf.oa.oa_buffer.gtt_offset;
+	num_samples = OA_TAKEN(tail, head) / report_size;
+
+	/* read the timestamp of the last sample */
+	if (num_samples) {
+		head += report_size*(num_samples - 1);
+		report = oa_buf_base + (head & mask);
+		*last_ts = *(u32 *)(report + 4);
+	}
+
+	return num_samples;
 }
 
 /* NB: This is either called via fops or the poll check hrtimer (atomic ctx)
@@ -560,16 +577,32 @@ static bool gen8_oa_buffer_is_empty_fop_unlocked(struct drm_i915_private *dev_pr
  * pointers.  A race here could result in a false positive !empty status which
  * is acceptable.
  */
-static bool gen7_oa_buffer_is_empty_fop_unlocked(struct drm_i915_private *dev_priv)
+static int
+gen7_oa_buffer_num_samples_fop_unlocked(struct drm_i915_private *dev_priv,
+					u32 *last_ts)
 {
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u32 oastatus2 = I915_READ(GEN7_OASTATUS2);
 	u32 oastatus1 = I915_READ(GEN7_OASTATUS1);
 	u32 head = oastatus2 & GEN7_OASTATUS2_HEAD_MASK;
 	u32 tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
+	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.addr;
+	u32 mask = (OA_BUFFER_SIZE - 1);
+	int available_size;
+	u32 num_samples = 0;
+	u8 *report;
 
-	return OA_TAKEN(tail, head) <
-		dev_priv->perf.oa.tail_margin + report_size;
+	head -= dev_priv->perf.oa.oa_buffer.gtt_offset;
+	tail -= dev_priv->perf.oa.oa_buffer.gtt_offset;
+	available_size = OA_TAKEN(tail, head) - dev_priv->perf.oa.tail_margin;
+	if (available_size >= report_size) {
+		num_samples = available_size / report_size;
+		head += report_size*(num_samples - 1);
+		report = oa_buf_base + (head & mask);
+		*last_ts = *(u32 *)(report + 4);
+	}
+
+	return num_samples;
 }
 
 /**
@@ -698,7 +731,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 				  size_t count,
 				  size_t *offset,
 				  u32 *head_ptr,
-				  u32 tail, u32 ts)
+				  u32 tail, u32 ts, u32 max_records)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
@@ -707,6 +740,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 	u32 head;
 	u32 taken;
 	int ret = 0;
+	int n_records = 0;
 
 	BUG_ON(stream->state != I915_PERF_STREAM_ENABLED);
 
@@ -733,7 +767,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 	tail &= ~(report_size - 1);
 
 	for (/* none */;
-	     (taken = OA_TAKEN(tail, head));
+	     (taken = OA_TAKEN(tail, head)) && (n_records <= max_records);
 	     head = (head + report_size) & mask) {
 		u8 *report = oa_buf_base + head;
 		u32 *report32 = (void *)report;
@@ -815,6 +849,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 			if (ret)
 				break;
 
+			n_records++;
 			dev_priv->perf.oa.oa_buffer.last_ctx_id = ctx_id;
 		}
 
@@ -843,7 +878,7 @@ static int gen8_append_oa_reports(struct i915_perf_stream *stream,
 static int gen8_oa_read(struct i915_perf_stream *stream,
 			char __user *buf,
 			size_t count,
-			size_t *offset, u32 ts)
+			size_t *offset, u32 ts, u32 max_records)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
@@ -900,7 +935,8 @@ static int gen8_oa_read(struct i915_perf_stream *stream,
 		}
 	}
 
-	ret = gen8_append_oa_reports(stream, buf, count, offset, &head, tail, ts);
+	ret = gen8_append_oa_reports(stream, buf, count, offset, &head, tail,
+					ts, max_records);
 
 	/* All the report sizes are a power of two and the
 	 * head should always be incremented by some multiple
@@ -942,7 +978,7 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 				  size_t count,
 				  size_t *offset,
 				  u32 *head_ptr,
-				  u32 tail, u32 ts)
+				  u32 tail, u32 ts, u32 max_records)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
@@ -952,6 +988,7 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 	u32 head;
 	u32 taken;
 	int ret = 0;
+	int n_records = 0;
 
 	BUG_ON(stream->state != I915_PERF_STREAM_ENABLED);
 
@@ -991,7 +1028,7 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 	tail &= mask;
 
 	for (/* none */;
-	     (taken = OA_TAKEN(tail, head));
+	     (taken = OA_TAKEN(tail, head)) && (n_records <= max_records);
 	     head = (head + report_size) & mask) {
 		u8 *report = oa_buf_base + head;
 		u32 *report32 = (void *)report;
@@ -1025,6 +1062,7 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 		if (ret)
 			break;
 
+		n_records++;
 		/* The above report-id field sanity check is based on
 		 * the assumption that the OA buffer is initially
 		 * zeroed and we reset the field after copying so the
@@ -1050,7 +1088,7 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 static int gen7_oa_read(struct i915_perf_stream *stream,
 			char __user *buf,
 			size_t count,
-			size_t *offset, u32 ts)
+			size_t *offset, u32 ts, u32 max_records)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
@@ -1123,7 +1161,7 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 	}
 
 	ret = gen7_append_oa_reports(stream, buf, count, offset,
-				     &head, tail, ts);
+				     &head, tail, ts, max_records);
 
 	/* All the report sizes are a power of two and the
 	 * head should always be incremented by some multiple
@@ -1170,7 +1208,8 @@ static int append_oa_rcs_sample(struct i915_perf_stream *stream,
 
 	/* First, append the periodic OA samples having lower timestamps */
 	report_ts = *(u32 *)(report + 4);
-	ret = dev_priv->perf.oa.ops.read(stream, buf, count, offset, report_ts);
+	ret = dev_priv->perf.oa.ops.read(stream, buf, count, offset,
+					report_ts, U32_MAX);
 	if (ret)
 		return ret;
 
@@ -1187,7 +1226,8 @@ static int append_oa_rcs_sample(struct i915_perf_stream *stream,
 }
 
 /**
- * Copies all command stream based OA reports into userspace read() buffer.
+ * Copies all OA reports into userspace read() buffer. This includes command
+ * stream as well as periodic OA reports.
  *
  * NB: some data may be successfully copied to the userspace buffer
  * even if an error is returned, and this is reflected in the
@@ -1204,7 +1244,7 @@ static int oa_rcs_append_reports(struct i915_perf_stream *stream,
 	spin_lock(&dev_priv->perf.node_list_lock);
 	if (list_empty(&dev_priv->perf.node_list)) {
 		spin_unlock(&dev_priv->perf.node_list_lock);
-		return 0;
+		goto pending_periodic;
 	}
 	list_for_each_entry_safe(entry, next,
 				 &dev_priv->perf.node_list, link) {
@@ -1215,7 +1255,7 @@ static int oa_rcs_append_reports(struct i915_perf_stream *stream,
 	spin_unlock(&dev_priv->perf.node_list_lock);
 
 	if (list_empty(&free_list))
-		return 0;
+		goto pending_periodic;
 
 	list_for_each_entry_safe(entry, next, &free_list, link) {
 		ret = append_oa_rcs_sample(stream, buf, count, offset, entry);
@@ -1233,16 +1273,35 @@ static int oa_rcs_append_reports(struct i915_perf_stream *stream,
 	spin_unlock(&dev_priv->perf.node_list_lock);
 
 	return ret;
+
+pending_periodic:
+	if (!dev_priv->perf.oa.n_pending_periodic_samples)
+		return 0;
+
+	ret = dev_priv->perf.oa.ops.read(stream, buf, count, offset,
+				dev_priv->perf.oa.pending_periodic_ts,
+				dev_priv->perf.oa.n_pending_periodic_samples);
+	dev_priv->perf.oa.n_pending_periodic_samples = 0;
+	dev_priv->perf.oa.pending_periodic_ts = 0;
+	return ret;
 }
+
+enum cs_buf_data_state {
+	CS_BUF_EMPTY,
+	CS_BUF_REQ_PENDING,
+	CS_BUF_HAVE_DATA,
+};
 
 /*
  * Checks whether the command stream buffer associated with the stream has
  * data ready to be forwarded to userspace.
- * Returns true if atleast one request associated with command stream is
- * completed, else returns false.
+ * Value returned:
+ * CS_BUF_HAVE_DATA	- if there is atleast one completed request
+ * CS_BUF_REQ_PENDING	- there are requests pending, but no completed requests
+ * CS_BUF_EMPTY		- no requests scheduled
  */
-static bool command_stream_buf_is_empty(struct i915_perf_stream *stream)
-
+static enum cs_buf_data_state command_stream_buf_state(
+				struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	struct i915_perf_cs_data_node *entry = NULL;
@@ -1256,34 +1315,60 @@ static bool command_stream_buf_is_empty(struct i915_perf_stream *stream)
 	spin_unlock(&dev_priv->perf.node_list_lock);
 
 	if (!entry)
-		return true;
+		return CS_BUF_EMPTY;
 	else if (!i915_gem_request_completed(request))
-		return true;
+		return CS_BUF_REQ_PENDING;
 	else
-		return false;
+		return CS_BUF_HAVE_DATA;
 }
 
 /*
- * Checks whether the stream has data ready to forward to userspace.
- * For command stream based streams, check if the command stream buffer has
- * atleast one sample ready, if not return false, irrespective of periodic
- * oa buffer having the data or not.
+ * Checks whether the stream has data ready to forward to userspace, by
+ * querying for periodic oa buffer and command stream buffer samples.
  */
 
 static bool stream_have_data__unlocked(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
+	enum cs_buf_data_state cs_buf_state;
+	u32 num_samples, last_ts = 0;
 
-	/* Note: the oa_buffer_is_empty() condition is ok to run unlocked as it
-	 * just performs mmio reads of the OA buffer head + tail pointers and
+	/* Note: oa_buffer_num_samples() is ok to run unlocked as it just
+	 * performs mmio reads of the OA buffer head + tail pointers and
 	 * it's assumed we're handling some operation that implies the stream
 	 * can't be destroyed until completion (such as a read()) that ensures
 	 * the device + OA buffer can't disappear
 	 */
+	dev_priv->perf.oa.n_pending_periodic_samples = 0;
+	dev_priv->perf.oa.pending_periodic_ts = 0;
+	num_samples = dev_priv->perf.oa.ops.oa_buffer_num_samples(dev_priv,
+								&last_ts);
 	if (stream->cs_mode)
-		return !command_stream_buf_is_empty(stream);
+		cs_buf_state = command_stream_buf_state(stream);
 	else
-		return !dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv);
+		cs_buf_state = CS_BUF_EMPTY;
+
+	/*
+	 * Note: We can safely forward the periodic OA samples in the case we
+	 * have no pending CS samples, but we can't do so in the case we have
+	 * pending CS samples, since we don't know what the ordering between
+	 * pending CS samples and periodic samples will eventually be. If we
+	 * have no pending CS sample, it won't be possible for future pending CS
+	 * sample to have timestamps earlier than current periodic timestamp.
+	 */
+	switch (cs_buf_state) {
+	case CS_BUF_EMPTY:
+		dev_priv->perf.oa.n_pending_periodic_samples = num_samples;
+		dev_priv->perf.oa.pending_periodic_ts = last_ts;
+		return (num_samples != 0);
+
+	case CS_BUF_HAVE_DATA:
+		return true;
+
+	case CS_BUF_REQ_PENDING:
+		default:
+		return false;
+	}
 }
 
 static int i915_oa_wait_unlocked(struct i915_perf_stream *stream)
@@ -1325,7 +1410,7 @@ static int i915_oa_read(struct i915_perf_stream *stream,
 		return oa_rcs_append_reports(stream, buf, count, offset);
 	else
 		return dev_priv->perf.oa.ops.read(stream, buf, count, offset,
-						U32_MAX);
+						U32_MAX, U32_MAX);
 }
 
 static void
@@ -2960,8 +3045,8 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 		dev_priv->perf.oa.ops.update_hw_ctx_id_locked =
 			gen7_update_hw_ctx_id_locked;
 		dev_priv->perf.oa.ops.read = gen7_oa_read;
-		dev_priv->perf.oa.ops.oa_buffer_is_empty =
-			gen7_oa_buffer_is_empty_fop_unlocked;
+		dev_priv->perf.oa.ops.oa_buffer_num_samples =
+			gen7_oa_buffer_num_samples_fop_unlocked;
 
 		dev_priv->perf.oa.timestamp_frequency = 12500000;
 
@@ -2974,8 +3059,8 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 		dev_priv->perf.oa.ops.oa_enable = gen8_oa_enable;
 		dev_priv->perf.oa.ops.oa_disable = gen8_oa_disable;
 		dev_priv->perf.oa.ops.read = gen8_oa_read;
-		dev_priv->perf.oa.ops.oa_buffer_is_empty =
-			gen8_oa_buffer_is_empty_fop_unlocked;
+		dev_priv->perf.oa.ops.oa_buffer_num_samples =
+				gen8_oa_buffer_num_samples_fop_unlocked;
 
 		dev_priv->perf.oa.oa_formats = gen8_plus_oa_formats;
 

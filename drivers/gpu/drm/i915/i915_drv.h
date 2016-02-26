@@ -1856,8 +1856,9 @@ struct i915_oa_ops {
 		    char __user *buf,
 		    size_t count,
 		    size_t *offset,
-		    u32 ts);
-	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
+		    u32 ts, u32 max_records);
+	int (*oa_buffer_num_samples)(struct drm_i915_private *dev_priv,
+					u32 *last_ts);
 };
 
 /*
@@ -2221,6 +2222,8 @@ struct drm_i915_private {
 			u32 gen7_latched_oastatus1;
 			u32 ctx_oactxctrl_off;
 			u32 ctx_flexeu0_off;
+			u32 n_pending_periodic_samples;
+			u32 pending_periodic_ts;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
