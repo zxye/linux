@@ -1779,7 +1779,7 @@ struct i915_perf_stream {
 	/* Return: true if any i915 perf records are ready to read()
 	 * for this stream.
 	 */
-	bool (*can_read)(struct i915_perf_stream *stream);
+	bool (*can_read_unlocked)(struct i915_perf_stream *stream);
 
 	/* Call poll_wait, passing a wait queue that will be woken
 	 * once there is something ready to read() for the stream
@@ -1791,8 +1791,8 @@ struct i915_perf_stream {
 	/* For handling a blocking read, wait until there is something
 	 * to ready to read() for the stream. E.g. wait on the same
 	 * wait queue that would be passed to poll_wait() until
-	 * ->can_read() returns true (if its safe to call ->can_read()
-	 * without the i915 perf lock held).
+	 * ->can_read_unlocked() returns true (if its safe to call
+	 * ->can_read_unlocked() without the i915 perf lock held).
 	 */
 	int (*wait_unlocked)(struct i915_perf_stream *stream);
 
@@ -1838,8 +1838,10 @@ struct i915_oa_ops {
 					u32 ctx_id);
 	void (*legacy_ctx_switch_unlocked)(struct drm_i915_gem_request *req);
 	int (*read)(struct i915_perf_stream *stream,
-		    struct i915_perf_read_state *read_state, u32 ts);
-	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
+		    struct i915_perf_read_state *read_state,
+		    u32 ts, u32 max_records);
+	int (*oa_buffer_num_samples)(struct i915_perf_stream *stream,
+					u32 *last_ts);
 };
 
 /*
@@ -2154,6 +2156,8 @@ struct drm_i915_private {
 			u32 gen7_latched_oastatus1;
 			u32 ctx_oactxctrl_off;
 			u32 ctx_flexeu0_off;
+			u32 n_pending_periodic_samples;
+			u32 pending_periodic_ts;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
