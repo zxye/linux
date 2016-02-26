@@ -2110,10 +2110,11 @@ struct i915_oa_ops {
 		    char __user *buf,
 		    size_t count,
 		    size_t *offset,
-		    u32 ts);
+		    u32 ts,
+		    u32 max_reports);
 
 	/**
-	 * @oa_buffer_check: Check for OA buffer data + update tail
+	 * @oa_buffer_num_reports: Return number of OA reports + update tail
 	 *
 	 * This is either called via fops or the poll check hrtimer (atomic
 	 * ctx) without any locks taken.
@@ -2126,7 +2127,8 @@ struct i915_oa_ops {
 	 * here, which will be handled gracefully - likely resulting in an
 	 * %EAGAIN error for userspace.
 	 */
-	bool (*oa_buffer_check)(struct drm_i915_private *dev_priv);
+	u32 (*oa_buffer_num_reports)(struct drm_i915_private *dev_priv,
+					u32 *last_ts);
 };
 
 /*
@@ -2589,6 +2591,8 @@ struct drm_i915_private {
 			u32 gen7_latched_oastatus1;
 			u32 ctx_oactxctrl_off;
 			u32 ctx_flexeu0_off;
+			u32 n_pending_periodic_samples;
+			u32 pending_periodic_ts;
 
 			/* The RPT_ID/reason field for Gen8+ includes a bit
 			 * to determine if the CTX ID in the report is valid
