@@ -478,6 +478,8 @@ static void insert_perf_sample(struct drm_i915_private *dev_priv,
 		else {
 			u32 target_size = sample_size - first->offset;
 
+			dev_priv->perf.command_stream_buf.status |=
+				I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
 			release_perf_samples(dev_priv, target_size);
 			sample->offset = 0;
 		}
@@ -491,6 +493,8 @@ static void insert_perf_sample(struct drm_i915_private *dev_priv,
 				(first->offset - last->offset -
 				sample_size);
 
+			dev_priv->perf.command_stream_buf.status |=
+				I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
 			release_perf_samples(dev_priv, target_size);
 			sample->offset = last->offset + sample_size;
 		}
@@ -1577,6 +1581,17 @@ static int oa_rcs_append_reports(struct i915_perf_stream *stream,
 	struct i915_perf_cs_sample *entry, *next;
 	LIST_HEAD(free_list);
 	int ret = 0;
+	u32 status = dev_priv->perf.command_stream_buf.status;
+
+	if (unlikely(status & I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW)) {
+		ret = append_oa_status(stream, buf, count, offset,
+				       DRM_I915_PERF_RECORD_OA_BUFFER_LOST);
+		if (ret)
+			return ret;
+
+		dev_priv->perf.command_stream_buf.status &=
+				~I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
+	}
 
 	spin_lock(&dev_priv->perf.sample_lock);
 	if (list_empty(&dev_priv->perf.cs_samples)) {
