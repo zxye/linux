@@ -637,6 +637,46 @@ gen7_oa_buffer_num_samples_fop_unlocked(struct drm_i915_private *dev_priv,
 	return num_samples;
 }
 
+static u32 gen7_oa_buffer_get_ctx_id(struct i915_perf_stream *stream,
+				    const u8 *report)
+{
+	struct drm_i915_private *dev_priv = stream->dev_priv;
+
+	if (!stream->cs_mode)
+		WARN_ONCE(1,
+			"CTX ID can't be retrieved if command stream mode not enabled");
+
+	/*
+	 * OA reports generated in Gen7 don't have the ctx ID information.
+	 * Therefore, just rely on the ctx ID information from the last CS
+	 * sample forwarded
+	 */
+	return dev_priv->perf.last_ctx_id;
+}
+
+static u32 gen8_oa_buffer_get_ctx_id(struct i915_perf_stream *stream,
+				    const u8 *report)
+{
+	struct drm_i915_private *dev_priv = stream->dev_priv;
+
+	/* The ctx ID present in the OA reports have intel_context::global_id
+	 * present, since this is programmed into the ELSP in execlist mode.
+	 * In non-execlist mode, fall back to retrieving the ctx ID from the
+	 * last saved ctx ID from command stream mode.
+	 */
+	if (i915.enable_execlists) {
+		u32 ctx_id = *(u32 *)(report + 12);
+		ctx_id &= 0xfffff;
+		return ctx_id;
+	} else {
+		if (!stream->cs_mode)
+		WARN_ONCE(1,
+			"CTX ID can't be retrieved if command stream mode not enabled");
+
+		return dev_priv->perf.last_ctx_id;
+	}
+}
+
 /**
  * Appends a status record to a userspace read() buffer.
  */
@@ -733,9 +773,9 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 		data.source = source;
 	}
 
-#warning "FIXME: append_oa_buffer_sample: read ctx ID from report and map that to an intel_context::global_id"
 	if (sample_flags & SAMPLE_CTX_ID)
-		data.ctx_id = 0;
+		data.ctx_id = dev_priv->perf.oa.ops.oa_buffer_get_ctx_id(
+						stream, report);
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1248,8 +1288,10 @@ static int append_oa_rcs_sample(struct i915_perf_stream *stream,
 	if (sample_flags & SAMPLE_OA_SOURCE_INFO)
 		data.source = I915_PERF_OA_EVENT_SOURCE_RCS;
 
-	if (sample_flags & SAMPLE_CTX_ID)
+	if (sample_flags & SAMPLE_CTX_ID) {
 		data.ctx_id = node->ctx_id;
+		dev_priv->perf.last_ctx_id = node->ctx_id;
+	}
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -3092,6 +3134,8 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 		dev_priv->perf.oa.ops.read = gen7_oa_read;
 		dev_priv->perf.oa.ops.oa_buffer_num_samples =
 			gen7_oa_buffer_num_samples_fop_unlocked;
+		dev_priv->perf.oa.ops.oa_buffer_get_ctx_id =
+					gen7_oa_buffer_get_ctx_id;
 
 		dev_priv->perf.oa.timestamp_frequency = 12500000;
 
@@ -3106,6 +3150,8 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 		dev_priv->perf.oa.ops.read = gen8_oa_read;
 		dev_priv->perf.oa.ops.oa_buffer_num_samples =
 				gen8_oa_buffer_num_samples_fop_unlocked;
+		dev_priv->perf.oa.ops.oa_buffer_get_ctx_id =
+					gen8_oa_buffer_get_ctx_id;
 
 		dev_priv->perf.oa.oa_formats = gen8_plus_oa_formats;
 
