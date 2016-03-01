@@ -2169,6 +2169,8 @@ struct drm_i915_private {
 			struct drm_i915_gem_object *obj;
 			struct i915_vma *vma;
 			u8 *addr;
+#define I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW (1<<0)
+			u32 status;
 		} command_stream_buf;
 
 		struct list_head node_list;

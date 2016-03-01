@@ -51,6 +51,9 @@ static u32 i915_perf_stream_paranoid = true;
 #define GEN8_OAREPORT_REASON_GO_TRANSITION  (1<<23)
 #define GEN9_OAREPORT_REASON_CLK_RATIO      (1<<24)
 
+/* For determining the behavior on overflow of command stream samples */
+#define CMD_STREAM_BUF_OVERFLOW_ALLOWED
+
 /* Data common to periodic and RCS based samples */
 struct oa_sample_data {
 	u32 source;
@@ -137,6 +140,7 @@ void i915_perf_command_stream_hook(struct drm_i915_gem_request *req)
 	mutex_unlock(&dev_priv->perf.streams_lock);
 }
 
+#ifdef CMD_STREAM_BUF_OVERFLOW_ALLOWED
 /*
  * Release some perf entries to make space for a new entry data. We dereference
  * the associated request before deleting the entry. Also, no need to check for
@@ -163,25 +167,26 @@ static void release_some_perf_entries(struct drm_i915_private *dev_priv,
 			break;
 	}
 }
+#endif
 
 /*
- * Insert the perf entry to the end of the list. This function never fails,
- * since it always manages to insert the entry. If the space is exhausted in
- * the buffer, it will remove the oldest entries in order to make space.
+ * Insert the perf entry to the end of the list. If the overwrite of old entries
+ * is allowed, the function always manages to insert the entry and returns 0.
+ * If overwrite is not allowed, on detection of overflow condition, an
+ * appropriate status flag is set, and function returns -ENOSPC.
  */
-static void insert_perf_entry(struct drm_i915_private *dev_priv,
+static int insert_perf_entry(struct drm_i915_private *dev_priv,
 				struct i915_perf_cs_data_node *entry)
 {
 	struct i915_perf_cs_data_node *first_entry, *last_entry;
 	int max_offset = dev_priv->perf.command_stream_buf.obj->base.size;
 	u32 entry_size = dev_priv->perf.oa.oa_buffer.format_size;
+	int ret = 0;
 
 	spin_lock(&dev_priv->perf.node_list_lock);
 	if (list_empty(&dev_priv->perf.node_list)) {
 		entry->offset = 0;
-		list_add_tail(&entry->link, &dev_priv->perf.node_list);
-		spin_unlock(&dev_priv->perf.node_list_lock);
-		return;
+		goto out;
 	}
 
 	first_entry = list_first_entry(&dev_priv->perf.node_list,
@@ -199,29 +204,49 @@ static void insert_perf_entry(struct drm_i915_private *dev_priv,
 		 */
 		else if (entry_size < first_entry->offset)
 			entry->offset = 0;
-		/* Insufficient space. Overwrite existing old entries */
+		/* Insufficient space */
 		else {
+#ifdef CMD_STREAM_BUF_OVERFLOW_ALLOWED
 			u32 target_size = entry_size - first_entry->offset;
 
 			release_some_perf_entries(dev_priv, target_size);
 			entry->offset = 0;
+#else
+			dev_priv->perf.command_stream_buf.status |=
+				I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
+			ret = -ENOSPC;
+			goto out_unlock;
+#endif
 		}
 	} else {
 		/* Sufficient space available? */
 		if (last_entry->offset + 2*entry_size < first_entry->offset)
 			entry->offset = last_entry->offset + entry_size;
-		/* Insufficient space. Overwrite existing old entries */
+		/* Insufficient space */
 		else {
+#ifdef CMD_STREAM_BUF_OVERFLOW_ALLOWED
 			u32 target_size = entry_size -
 				(first_entry->offset - last_entry->offset -
 				entry_size);
 
 			release_some_perf_entries(dev_priv, target_size);
 			entry->offset = last_entry->offset + entry_size;
+#else
+			dev_priv->perf.command_stream_buf.status |=
+				I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
+			ret = -ENOSPC;
+			goto out_unlock;
+#endif
 		}
 	}
+
+out:
 	list_add_tail(&entry->link, &dev_priv->perf.node_list);
+#ifndef CMD_STREAM_BUF_OVERFLOW_ALLOWED
+out_unlock:
+#endif
 	spin_unlock(&dev_priv->perf.node_list_lock);
+	return ret;
 }
 
 static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
@@ -243,20 +268,19 @@ static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
 		return;
 	}
 
+	ret = insert_perf_entry(dev_priv, entry);
+	if (ret)
+		goto out_free;
+
 	if (i915.enable_execlists)
 		ret = intel_logical_ring_begin(req, 4);
 	else
 		ret = intel_ring_begin(req, 4);
-
-	if (ret) {
-		kfree(entry);
-		return;
-	}
+	if (ret)
+		goto out;
 
 	entry->ctx_id = ctx->global_id;
 	i915_gem_request_assign(&entry->request, req);
-
-	insert_perf_entry(dev_priv, entry);
 
 	addr = dev_priv->perf.command_stream_buf.vma->node.start +
 		entry->offset;
@@ -288,6 +312,14 @@ static void i915_perf_command_stream_hook_oa(struct drm_i915_gem_request *req)
 		intel_ring_advance(ring);
 	}
 	i915_vma_move_to_active(dev_priv->perf.command_stream_buf.vma, req);
+	return;
+
+out:
+	spin_lock(&dev_priv->perf.node_list_lock);
+	list_del(&entry->link);
+	spin_unlock(&dev_priv->perf.node_list_lock);
+out_free:
+	kfree(entry);
 }
 
 static int i915_oa_rcs_wait_gpu(struct drm_i915_private *dev_priv)
@@ -872,7 +904,20 @@ static int oa_rcs_append_reports(struct i915_perf_stream *stream,
 	struct i915_perf_cs_data_node *entry, *next;
 	LIST_HEAD(free_list);
 	int ret = 0;
+#ifndef CMD_STREAM_BUF_OVERFLOW_ALLOWED
+	u32 cs_buf_status = dev_priv->perf.command_stream_buf.status;
 
+	if (unlikely(cs_buf_status &
+			I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW)) {
+		ret = append_oa_status(stream, read_state,
+				       DRM_I915_PERF_RECORD_OA_BUFFER_OVERFLOW);
+		if (ret)
+			return ret;
+
+		dev_priv->perf.command_stream_buf.status &=
+				~I915_PERF_CMD_STREAM_BUF_STATUS_OVERFLOW;
+	}
+#endif
 	spin_lock(&dev_priv->perf.node_list_lock);
 	if (list_empty(&dev_priv->perf.node_list)) {
 		spin_unlock(&dev_priv->perf.node_list_lock);
