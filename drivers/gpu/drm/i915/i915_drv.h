@@ -2129,6 +2129,12 @@ struct i915_oa_ops {
 	 */
 	u32 (*oa_buffer_num_reports)(struct drm_i915_private *dev_priv,
 					u32 *last_ts);
+
+	/**
+	 * @get_ctx_id: Retrieve the ctx_id associated with the (periodic) OA
+	 * report.
+	 */
+	u32 (*get_ctx_id)(struct i915_perf_stream *stream, const u8 *report);
 };
 
 /*
@@ -2613,6 +2619,7 @@ struct drm_i915_private {
 			u32 status;
 		} command_stream_buf;
 
+		u32 last_cmd_stream_ctx_id;
 		struct list_head cs_samples;
 		spinlock_t sample_lock;
 	} perf;
