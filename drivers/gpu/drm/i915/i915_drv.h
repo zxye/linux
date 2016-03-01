@@ -1842,6 +1842,8 @@ struct i915_oa_ops {
 		    u32 ts, u32 max_records);
 	int (*oa_buffer_num_samples)(struct i915_perf_stream *stream,
 					u32 *last_ts);
+	u32 (*oa_buffer_get_ctx_id)(struct i915_perf_stream *stream,
+					const u8 *report);
 };
 
 /*
@@ -2173,6 +2175,7 @@ struct drm_i915_private {
 			u32 status;
 		} command_stream_buf;
 
+		u32 last_ctx_id;
 		struct list_head node_list;
 		spinlock_t node_list_lock;
 	} perf;
