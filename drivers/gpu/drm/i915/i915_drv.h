@@ -2175,6 +2175,7 @@ struct drm_i915_private {
 			u32 ctx_flexeu0_off;
 			u32 n_pending_periodic_samples;
 			u32 pending_periodic_ts;
+			u64 last_gpu_ts;
 
 			struct i915_oa_ops ops;
 			const struct i915_oa_format *oa_formats;
