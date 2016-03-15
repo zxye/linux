@@ -1159,6 +1159,26 @@ static int append_sample(struct i915_perf_stream *stream,
 }
 
 /**
+ * get_gpu_ts_from_oa_report - Retrieve absolute gpu timestamp from OA report
+ *
+ * Note: We are assuming that we're updating last_gpu_ts frequently enough so
+ * that it's never possible to see multiple overflows before we compare
+ * sample_ts to last_gpu_ts. Since this is significantly large duration
+ * (~6min for 80ns ts base), we can safely assume so.
+ */
+static u64 get_gpu_ts_from_oa_report(struct drm_i915_private *dev_priv,
+					const u8 *report)
+{
+	u32 sample_ts = *(u32 *)(report + 4);
+	u32 delta;
+
+	delta = sample_ts - (u32)dev_priv->perf.oa.last_gpu_ts;
+	dev_priv->perf.oa.last_gpu_ts += delta;
+
+	return dev_priv->perf.oa.last_gpu_ts;
+}
+
+/**
  * append_oa_buffer_sample - Copies single periodic OA report into userspace
  * read() buffer.
  * @stream: An i915-perf stream opened for OA metrics
@@ -1189,11 +1209,8 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 	if (sample_flags & SAMPLE_TAG)
 		data.tag = dev_priv->perf.last_tag;
 
-	/* TODO: Derive timestamp from OA report,
-	 * after scaling with the ts base
-	 */
 	if (sample_flags & SAMPLE_TS)
-		data.ts = 0;
+		data.ts = get_gpu_ts_from_oa_report(dev_priv, report);
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1752,6 +1769,7 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 	struct sample_data data = { 0 };
 	enum intel_engine_id id = stream->engine;
 	u32 sample_flags = stream->sample_flags;
+	u64 gpu_ts = 0;
 	int ret = 0;
 
 	if (sample_flags & SAMPLE_OA_REPORT) {
@@ -1768,6 +1786,9 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 						sample_ts, U32_MAX);
 		if (ret)
 			return ret;
+
+		if (sample_flags & SAMPLE_TS)
+			gpu_ts = get_gpu_ts_from_oa_report(dev_priv, report);
 	}
 
 	if (sample_flags & SAMPLE_OA_SOURCE_INFO)
@@ -1789,18 +1810,14 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 	}
 
 	if (sample_flags & SAMPLE_TS) {
-		/* For RCS, if OA samples are also being collected, derive the
-		 * timestamp from OA report, after scaling with the TS base.
+		/* If OA sampling is enabled, derive the ts from OA report.
 		 * Else, forward the timestamp collected via command stream.
 		 */
-
-		/* TODO: derive the timestamp from OA report */
-		if (sample_flags & SAMPLE_OA_REPORT)
-			data.ts = 0;
-		else
-			data.ts = *(u64 *)
+		if (!(sample_flags & SAMPLE_OA_REPORT))
+			gpu_ts = *(u64 *)
 				(dev_priv->perf.command_stream_buf[id].vaddr +
 					node->ts_offset);
+		data.ts = gpu_ts;
 	}
 
 	return append_sample(stream, buf, count, offset, &data);
@@ -2815,8 +2832,14 @@ static void i915_engine_stream_enable(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 
-	if (stream->sample_flags & SAMPLE_OA_REPORT)
+	if (stream->sample_flags & SAMPLE_OA_REPORT) {
 		dev_priv->perf.oa.ops.oa_enable(dev_priv);
+
+		if (stream->sample_flags & SAMPLE_TS)
+			dev_priv->perf.oa.last_gpu_ts =
+				I915_READ64_2x32(GT_TIMESTAMP_COUNT,
+					GT_TIMESTAMP_COUNT_UDW);
+	}
 
 	if (stream->cs_mode || dev_priv->perf.oa.periodic)
 		hrtimer_start(&dev_priv->perf.poll_check_timer,

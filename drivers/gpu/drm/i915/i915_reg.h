@@ -600,6 +600,10 @@ static inline bool i915_mmio_reg_valid(i915_reg_t reg)
 #define PS_DEPTH_COUNT                  _MMIO(0x2350)
 #define PS_DEPTH_COUNT_UDW		_MMIO(0x2350 + 4)
 
+/* Timestamp count register */
+#define GT_TIMESTAMP_COUNT		_MMIO(0x2358)
+#define GT_TIMESTAMP_COUNT_UDW		_MMIO(0x2358 + 4)
+
 /* There are the 4 64-bit counter registers, one for each stream output */
 #define GEN7_SO_NUM_PRIMS_WRITTEN(n)		_MMIO(0x5200 + (n) * 8)
 #define GEN7_SO_NUM_PRIMS_WRITTEN_UDW(n)	_MMIO(0x5200 + (n) * 8 + 4)

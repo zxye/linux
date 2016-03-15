@@ -2643,6 +2643,7 @@ struct drm_i915_private {
 			u32 ctx_flexeu0_off;
 			u32 n_pending_periodic_samples;
 			u32 pending_periodic_ts;
+			u64 last_gpu_ts;
 
 			/* The RPT_ID/reason field for Gen8+ includes a bit
 			 * to determine if the CTX ID in the report is valid
