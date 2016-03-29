@@ -1768,6 +1768,9 @@ struct i915_perf_stream {
 	/* Whether the OA unit is in use */
 	bool using_oa;
 
+	/* monotonic clk ts for last sample */
+	u64 last_sample_ts;
+
 	/* Enables the collection of HW samples, either in response to
 	 * I915_PERF_IOCTL_ENABLE or implicitly called when stream is
 	 * opened without I915_PERF_FLAG_DISABLED.
@@ -2143,6 +2146,14 @@ struct drm_i915_private {
 		struct hrtimer poll_check_timer;
 		struct i915_perf_stream *ring_stream[I915_NUM_RINGS];
 		wait_queue_head_t poll_wq[I915_NUM_RINGS];
+
+		/* Timekeeping Info */
+		u64 clk_mono; /* last monotonic clk value */
+		u64 gpu_time; /* last gpu time value */
+		s64 clk_offset; /* Offset between clk mono and gpu time */
+		u32 gpu_clk_freq;
+		u32 resync_period; /* in msecs */
+		struct delayed_work clk_sync_work;
 
 		struct {
 			u32 specific_ctx_id;

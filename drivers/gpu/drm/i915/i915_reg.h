@@ -3265,6 +3265,16 @@ enum skl_disp_power_wells {
 				INTERVAL_1_33_US(us)) : \
 				INTERVAL_1_28_US(us))
 
+/* GT CS timestamp base to ns conversion scale factors */
+#define FREQUENCY_12_5_MHZ	(12500000)
+#define FREQUENCY_12_0_MHZ	(12000000)
+#define FREQUENCY_19_2_MHZ	(19200000)
+#define GT_CS_FREQUENCY(dev_priv) (IS_GEN9(dev_priv) ? \
+				(IS_BROXTON(dev_priv) ? \
+				FREQUENCY_19_2_MHZ : \
+				FREQUENCY_12_0_MHZ) : \
+				FREQUENCY_12_5_MHZ)
+
 /*
  * Logical Context regs
  */
