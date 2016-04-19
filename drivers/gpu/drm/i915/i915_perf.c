@@ -33,6 +33,26 @@
 #define OA_BUFFER_SIZE		SZ_16M
 #define OA_TAKEN(tail, head)	((tail - head) & (OA_BUFFER_SIZE - 1))
 
+/* There's a HW race condition between OA unit tail pointer register updates and
+ * writes to memory whereby the tail pointer can sometimes get ahead of what's
+ * been written out to the OA buffer so far.
+ *
+ * Although this can be observed explicitly by checking for a zeroed report-id
+ * field in tail reports, it seems preferable to account for this earlier e.g.
+ * as part of the _oa_buffer_is_empty checks to minimize -EAGAIN polling cycles
+ * in this situation.
+ *
+ * To give time for the most recent reports to land before they may be copied to
+ * userspace, the driver operates as if the tail pointer effectively lags behind
+ * the HW tail pointer by 'tail_margin' bytes. The margin in bytes is calculated
+ * based on this constant in nanoseconds, the current OA sampling exponent
+ * and current report size.
+ *
+ * There is also a fallback check while reading to simply skip over reports with
+ * a zeroed report-id.
+ */
+#define OA_TAIL_MARGIN_NSEC	100000ULL
+
 /* frequency for checking whether the OA unit has written new reports to the
  * circular OA buffer... */
 #define POLL_FREQUENCY 200
@@ -75,7 +95,7 @@ struct perf_open_properties {
 	int metrics_set;
 	int oa_format;
 	bool oa_periodic;
-	u32 oa_period_exponent;
+	int oa_period_exponent;
 };
 
 /* NB: This is either called via fops or the poll check hrtimer (atomic ctx)
@@ -160,12 +180,12 @@ static int append_oa_sample(struct i915_perf_stream *stream,
  * Copies all buffered OA reports into userspace read() buffer.
  * @head_ptr: (inout): the head pointer before and after appending
  *
- * Returns the number of records appended (may be zero if the read()
- * buffer is already full), or -EFAULT for failures while copying.
+ * Returns 0 on success, negative error code on failure.
  *
- * Consistent with i915_perf_stream::read(), this function should only
- * return an -EFAULT from copying if no records have been copied and
- * otherwise reports a short read.
+ * Notably any error condition resulting in a short read (-ENOSPC or
+ * -EFAULT) will be returned even though one or more records may
+ * have been successfully copied. In this case the error may be
+ * squashed before returning to userspace.
  */
 static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 				  struct i915_perf_read_state *read_state,
@@ -180,7 +200,8 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 	u32 head;
 	u32 taken;
 	int ret = 0;
-	int n_records = 0;
+
+	BUG_ON(!stream->enabled);
 
 	head = *head_ptr - dev_priv->perf.oa.oa_buffer.gtt_offset;
 	tail -= dev_priv->perf.oa.oa_buffer.gtt_offset;
@@ -219,6 +240,9 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 	     (taken = OA_TAKEN(tail, head));
 	     head = (head + report_size) & mask)
 	{
+		u8 *report = oa_buf_base + head;
+		u32 *report32 = (void *)report;
+
 		/* All the report sizes factor neatly into the buffer
 		 * size so we never expect to see a report split
 		 * between the beginning and end of the buffer.
@@ -229,51 +253,35 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 		 */
 		BUG_ON((OA_BUFFER_SIZE - head) < report_size);
 
-		if (dev_priv->perf.oa.exclusive_stream->enabled) {
-			u8 *report = oa_buf_base + head;
-			u32 *report32 = (void *)report;
-
-			if (report32[1] == 0) {
-				DRM_ERROR("Spurious OA report timestamp == 0: skipping\n");
-				continue;
-			}
-
-			ret = append_oa_sample(stream, read_state, report);
-			if (n_records && ret == -EFAULT)
-				ret = 0;
-			if (ret > 0)
-				n_records += ret;
-			else
-				break;
-
-			/* To help catch future OA tail ptr vs memory write
-			 * synchronization discrepancies when old reports are
-			 * overwritten we zero the timestamp after forwarding a
-			 * report.
-			 */
-			report32[1] = 0;
+		/* The report-ID field for periodic samples includes
+		 * some undocumented flags related to what triggered
+		 * the report and is never expected to be zero so we
+		 * can check that the report isn't invalid before
+		 * copying it to userspace...
+		 */
+		if (report32[0] == 0) {
+			DRM_ERROR("Skipping spurious, invalid OA report\n");
+			continue;
 		}
+
+		ret = append_oa_sample(stream, read_state, report);
+		if (ret)
+			break;
+
+		/* The above report-id field sanity check is based on
+		 * the assumption that the OA buffer is initially
+		 * zeroed and we reset the field after copying so the
+		 * check is still meaningful once old reports start
+		 * being overwritten.
+		 */
+		report32[1] = 0;
 	}
 
 	*head_ptr = dev_priv->perf.oa.oa_buffer.gtt_offset + head;
 
-
-	if (ret < 0)
-		return ret;
-	else
-		return n_records;
+	return ret;
 }
 
-/**
- * Check OA status registers, appending status records if necessary
- * and copy as many buffered OA reports to userspace as possible.
- *
- * NB: this function should only return an -EFAULT from copying if no
- * records have been copied and otherwise report a short read.
- *
- * Returns the number of records appended (may be zero if no room in
- * read() buffer), or -EFAULT (the only errno we expect to see here)
- */
 static int gen7_oa_read(struct i915_perf_stream *stream,
 			struct i915_perf_read_state *read_state)
 {
@@ -283,8 +291,7 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 	u32 oastatus1;
 	u32 head;
 	u32 tail;
-	int ret = 1; /* > 0 implies a prior successful append */
-	int n_records = 0;
+	int ret;
 
 	WARN_ON(!dev_priv->perf.oa.oa_buffer.addr);
 
@@ -303,20 +310,23 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 
 	/* We treat OABUFFER_OVERFLOW as a significant error:
 	 *
-	 * - The status can be interpreted to simply mean that the buffer is
-	 *   currently full (which would have to take higher precedence than
-	 *   OA_TAKEN() which will start to report a near-empty buffer after an
-	 *   overflow) but it's awkward that we can't clear the status on
-	 *   Haswell, so without a reset we won't be able to catch the state
-	 *   again.
-	 * - Since it also implies the HW has started overwriting old reports
-	 *   with non-zero timestamp fields it may also affects our ability to
-	 *   detect the memory write races vs tail pointer updates that are
-	 *   sometimes seen.
-	 * - In the future we may want to introduce a flight recorder mode
-	 *   where the driver will automatically maintain a safe guard band
-	 *   between head/tail, avoiding this overflow condition, but we
-	 *   avoid the added driver complexity for now.
+	 * - The status can be interpreted to mean that the buffer is
+	 *   currently full (with a higher precedence than OA_TAKEN()
+	 *   which will start to report a near-empty buffer after an
+	 *   overflow) but it's awkward that we can't clear the status
+	 *   on Haswell, so without a reset we won't be able to catch
+	 *   the state again.
+	 *
+	 * - Since it also implies the HW has started overwriting old
+	 *   reports it may also affect our sanity checks for invalid
+	 *   reports when copying to userspace that assume new reports
+	 *   are being written to cleared memory.
+	 *
+	 * - In the future we may want to introduce a flight recorder
+	 *   mode where the driver will automatically maintain a safe
+	 *   guard band between head/tail, avoiding this overflow
+	 *   condition, but we avoid the added driver complexity for
+	 *   now.
 	 */
 	if (unlikely(oastatus1 & GEN7_OASTATUS1_OABUFFER_OVERFLOW)) {
 		ret = append_oa_status(stream, read_state,
@@ -345,28 +355,28 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 			GEN7_OASTATUS1_REPORT_LOST;
 	}
 
-	/* If there is still buffer space */
-	if (ret) {
-		ret = gen7_append_oa_reports(stream, read_state, &head, tail);
-		if (n_records && ret == -EFAULT)
-			ret = 0;
-		else if (ret < 0)
-			return ret;
-		else if (ret > 0) {
-			n_records += ret;
+	ret = gen7_append_oa_reports(stream, read_state, &head, tail);
 
-			/* All the report sizes are a power of two and the
-			 * head should always be incremented by some multiple
-			 * of the report size... */
-			WARN_ONCE(head & (report_size - 1),
-				  "i915: Writing misaligned OA head pointer");
-			I915_WRITE(GEN7_OASTATUS2,
-				   ((head & GEN7_OASTATUS2_HEAD_MASK) |
-				    OA_MEM_SELECT_GGTT));
-		}
-	}
+	/* All the report sizes are a power of two and the
+	 * head should always be incremented by some multiple
+	 * of the report size.
+	 *
+	 * A warning here, but notably if we later read back a
+	 * misaligned pointer we will treat that as a bug since
+	 * it could lead to a buffer overrun.
+	 */
+	WARN_ONCE(head & (report_size - 1),
+		  "i915: Writing misaligned OA head pointer");
 
-	return n_records;
+	/* Note: we update the head pointer here even if an error
+	 * was returned since the error may represent a short read
+	 * where some some reports were successfully copied.
+	 */
+	I915_WRITE(GEN7_OASTATUS2,
+		   ((head & GEN7_OASTATUS2_HEAD_MASK) |
+		    OA_MEM_SELECT_GGTT));
+
+	return ret;
 }
 
 static bool i915_oa_can_read(struct i915_perf_stream *stream)
@@ -486,6 +496,13 @@ static void gen7_init_oa_buffer(struct drm_i915_private *dev_priv)
 	 * sampling is enabled.
 	 */
 	dev_priv->perf.oa.gen7_latched_oastatus1 = 0;
+
+	/* We have a sanity check in gen7_append_oa_reports() that
+	 * looks at the report-id field to make sure it's non-zero
+	 * which relies on the assumption that new reports are
+	 * being written to zeroed memory...
+	 */
+	memset(dev_priv->perf.oa.oa_buffer.addr, 0, SZ_16M);
 }
 
 static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
@@ -518,8 +535,6 @@ static int alloc_oa_buffer(struct drm_i915_private *dev_priv)
 
 	dev_priv->perf.oa.oa_buffer.gtt_offset = i915_gem_obj_ggtt_offset(bo);
 	dev_priv->perf.oa.oa_buffer.addr = vmap_oa_buffer(bo);
-
-	memset(dev_priv->perf.oa.oa_buffer.addr, 0, SZ_16M);
 
 	dev_priv->perf.oa.ops.init_oa_buffer(dev_priv);
 
@@ -673,6 +688,12 @@ static void i915_oa_stream_disable(struct i915_perf_stream *stream)
 		hrtimer_cancel(&dev_priv->perf.oa.poll_check_timer);
 }
 
+static u64 oa_exponent_to_ns(struct drm_i915_private *dev_priv, int exponent)
+{
+	return 1000000000ULL * (2ULL << exponent) /
+		dev_priv->perf.oa.timestamp_frequency;
+}
+
 static int i915_oa_stream_init(struct i915_perf_stream *stream,
 			       struct drm_i915_perf_open_param *param,
 			       struct perf_open_properties *props)
@@ -727,29 +748,15 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 
 	dev_priv->perf.oa.periodic = props->oa_periodic;
 	if (dev_priv->perf.oa.periodic) {
+		u64 period_ns = oa_exponent_to_ns(dev_priv,
+						  props->oa_period_exponent);
+
 		dev_priv->perf.oa.period_exponent = props->oa_period_exponent;
 
-		/* There sometimes seems to be a lack of synchronization
-		 * between the OA unit writing to memory and updates to the
-		 * tail pointer register.
-		 *
-		 * Although this can be observed more explicitly by attempting
-		 * to read the tail record, it's tricky to avoid false
-		 * positives while most report fields can technically have any
-		 * value and it's not clear whether a positive read for a field
-		 * at the top of the buffer is a reliable indication that the
-		 * full buffer has landed.
-		 *
-		 * Our approach is to define the effective tail pointer as
-		 * lagging the HW reported tail by some margin of N reports,
-		 * depending on the current sampling exponent.
-		 *
-		 * The margin is calculated relative to a sampling exponent of
-		 * 9 which was chosen experimentally and corresponds to ~82us.
-		 */
+		/* See comment for OA_TAIL_MARGIN_NSEC for details
+		 * about this tail_margin... */
 		dev_priv->perf.oa.tail_margin =
-			(max((2 << 9) / (2 << props->oa_period_exponent), 1) *
-			 format_size);
+			((OA_TAIL_MARGIN_NSEC / period_ns) + 1) * format_size;
 	}
 
 	ret = alloc_oa_buffer(dev_priv);
@@ -1322,6 +1329,8 @@ void i915_perf_init(struct drm_device *dev)
 	dev_priv->perf.oa.ops.read = gen7_oa_read;
 	dev_priv->perf.oa.ops.oa_buffer_is_empty =
 			gen7_oa_buffer_is_empty_fop_unlocked;
+
+	dev_priv->perf.oa.timestamp_frequency = 12500000;
 
 	dev_priv->perf.oa.oa_formats = hsw_oa_formats;
 

@@ -2094,11 +2094,12 @@ struct drm_i915_private {
 			wait_queue_head_t poll_wq;
 
 			bool periodic;
-			u32 period_exponent;
+			int period_exponent;
+			int timestamp_frequency;
 
 			int tail_margin;
 
-			u32 metrics_set;
+			int metrics_set;
 
 			const struct i915_oa_reg *mux_regs;
 			int mux_regs_len;
