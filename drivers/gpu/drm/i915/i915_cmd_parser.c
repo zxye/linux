@@ -1245,7 +1245,7 @@ int i915_parse_cmds(struct intel_engine_cs *engine,
 
 		if (!check_cmd(engine, desc, cmd, length, is_master,
 			       &oacontrol_set)) {
-			ret = -EINVAL;
+			ret = -EACCES;
 			break;
 		}
 
