@@ -872,6 +872,18 @@ static void i915_driver_cleanup_early(struct drm_i915_private *dev_priv)
 	i915_workqueues_cleanup(dev_priv);
 }
 
+/**
+ * i915_driver_init_late - initialize late stage driver components
+ * @dev_priv: device private
+ *
+ * Setup the driver components, which need to be inited after driver state has
+ * been registered and device enabled.
+ */
+static void i915_driver_init_late(struct drm_i915_private *dev_priv)
+{
+	i915_perf_init_late(dev_priv);
+}
+
 static int i915_mmio_setup(struct drm_i915_private *dev_priv)
 {
 	struct pci_dev *pdev = dev_priv->drm.pdev;
@@ -1244,6 +1256,8 @@ int i915_driver_load(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_cleanup_vblank;
 
 	i915_driver_register(dev_priv);
+
+	i915_driver_init_late(dev_priv);
 
 	intel_runtime_pm_enable(dev_priv);
 
