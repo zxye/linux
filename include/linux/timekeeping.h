@@ -337,6 +337,11 @@ extern int get_device_system_crosststamp(
 			struct system_device_crosststamp *xtstamp);
 
 /*
+ * Get current clocksource used by system timekeeping framework
+ */
+struct clocksource *get_current_clocksource(void);
+
+/*
  * Simultaneously snapshot realtime and monotonic raw clocks
  */
 extern void ktime_get_snapshot(struct system_time_snapshot *systime_snapshot);
