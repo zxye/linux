@@ -43,6 +43,9 @@
 #include <linux/pm_qos.h>
 #include <linux/reservation.h>
 #include <linux/shmem_fs.h>
+#include <linux/timecounter.h>
+#include <linux/clocksource.h>
+#include <linux/timekeeping.h>
 
 #include <drm/drmP.h>
 #include <drm/intel-gtt.h>
@@ -2057,6 +2060,12 @@ struct i915_perf_stream {
 	struct i915_gem_active last_request;
 
 	/**
+	 * @last_sample_ts: monotonic_raw clk timestamp (in ns) for last sample
+	 * belonging to this perf stream.
+	 */
+	u64 last_sample_ts;
+
+	/**
 	 * @ops: The callbacks providing the implementation of this specific
 	 * type of configured stream.
 	 */
@@ -2210,6 +2219,20 @@ struct i915_perf_cs_sample {
 	 * these different stages.
 	 */
 	u32 tag;
+};
+
+/**
+ * struct i915_clock_info - decribes i915 timestamp clock
+ *
+ */
+struct i915_clock_info {
+	struct cyclecounter cc;
+	struct timecounter tc;
+	struct system_device_crosststamp xtstamp;
+	ktime_t clk_offset; /* Offset (in ns) between monoraw clk and gpu time */
+	u32 timestamp_frequency;
+	u32 resync_period; /* in msecs */
+	struct delayed_work clk_sync_work;
 };
 
 struct intel_cdclk_state {
@@ -2532,6 +2555,8 @@ struct drm_i915_private {
 	} wm;
 
 	struct i915_runtime_pm pm;
+
+	struct i915_clock_info ts_clk_info;
 
 	struct {
 		bool initialized;
@@ -3889,6 +3914,7 @@ int intel_engine_cmd_parser(struct intel_engine_cs *engine,
 
 /* i915_perf.c */
 extern void i915_perf_init(struct drm_i915_private *dev_priv);
+extern void i915_perf_init_late(struct drm_i915_private *dev_priv);
 extern void i915_perf_fini(struct drm_i915_private *dev_priv);
 extern void i915_perf_register(struct drm_i915_private *dev_priv);
 extern void i915_perf_unregister(struct drm_i915_private *dev_priv);

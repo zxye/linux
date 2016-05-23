@@ -1396,6 +1396,12 @@ enum drm_i915_perf_property_id {
 	 */
 	DRM_I915_PERF_PROP_SAMPLE_TS,
 
+	/**
+	 * This property requests inclusion of CLOCK_MONOTONIC system time in
+	 * the perf sample data.
+	 */
+	DRM_I915_PERF_PROP_SAMPLE_CLOCK_MONOTONIC_RAW,
+
 	DRM_I915_PERF_PROP_MAX /* non-ABI */
 };
 
@@ -1465,7 +1471,8 @@ enum drm_i915_perf_record_type {
 	 *     { u32 ctx_id; } && DRM_I915_PERF_PROP_SAMPLE_CTX_ID
 	 *     { u32 pid; } && DRM_I915_PERF_PROP_SAMPLE_PID
 	 *     { u32 tag; } && DRM_I915_PERF_PROP_SAMPLE_TAG
-	 *     { u64 timestamp; } && DRM_I915_PERF_PROP_SAMPLE_TS
+	 *     { u64 gpu_ts; } && DRM_I915_PERF_PROP_SAMPLE_TS
+	 *     { u64 clk_mono; } && DRM_I915_PERF_PROP_SAMPLE_CLOCK_MONOTONIC
 	 *     { u32 oa_report[]; } && DRM_I915_PERF_PROP_SAMPLE_OA
 	 * };
 	 */
