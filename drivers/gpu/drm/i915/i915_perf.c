@@ -189,6 +189,7 @@
 
 #include <linux/anon_inodes.h>
 #include <linux/sizes.h>
+#include <linux/ktime.h>
 
 #include "i915_drv.h"
 #include "intel_ringbuffer.h"
@@ -228,6 +229,9 @@
 #define POLL_FREQUENCY 200
 #define POLL_PERIOD (NSEC_PER_SEC / POLL_FREQUENCY)
 
+#define MAX_CLK_SYNC_PERIOD (60*MSEC_PER_SEC)
+#define INIT_CLK_SYNC_PERIOD (20) /* in msecs */
+
 static u32 i915_perf_stream_paranoid = true;
 
 /* The maximum exponent the hardware accepts is 63 (essentially it selects one
@@ -254,13 +258,24 @@ static u32 i915_perf_stream_paranoid = true;
 #define TS_ADDR_ALIGN 8
 #define I915_PERF_TS_SAMPLE_SIZE 8
 
+/* Published frequency of GT command stream timestamp clock */
+#define FREQUENCY_12_5_MHZ	(12500000)
+#define FREQUENCY_12_0_MHZ	(12000000)
+#define FREQUENCY_19_2_MHZ	(19200000)
+#define GT_CS_TIMESTAMP_FREQUENCY(dev_priv) (IS_GEN9(dev_priv) ? \
+				(IS_BROXTON(dev_priv) ? \
+				FREQUENCY_19_2_MHZ : \
+				FREQUENCY_12_0_MHZ) : \
+				FREQUENCY_12_5_MHZ)
+
 /* Data common to all samples (periodic OA / CS based OA / Timestamps) */
 struct sample_data {
 	u32 source;
 	u32 ctx_id;
 	u32 pid;
 	u32 tag;
-	u64 ts;
+	u64 gpu_ts;
+	u64 clk_monoraw;
 	const u8 *report;
 };
 
@@ -319,6 +334,7 @@ static const enum intel_engine_id user_ring_map[I915_USER_RINGS + 1] = {
 #define SAMPLE_PID		(1<<3)
 #define SAMPLE_TAG		(1<<4)
 #define SAMPLE_TS		(1<<5)
+#define SAMPLE_CLK_MONO_RAW	(1<<6)
 
 struct perf_open_properties {
 	u32 sample_flags;
@@ -336,6 +352,136 @@ struct perf_open_properties {
 	bool cs_mode;
 	enum intel_engine_id engine;
 };
+
+/**
+ * i915_tstamp_clk_cyclecounter_read - read raw cycle counter
+ * @cc: cyclecounter structure
+ **/
+static cycle_t i915_tstamp_clk_cyclecounter_read(
+				const struct cyclecounter *cc)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(cc, typeof(*dev_priv),
+			     ts_clk_info.cc);
+
+	return I915_READ64_2x32(GT_TIMESTAMP_COUNT,
+					GT_TIMESTAMP_COUNT_UDW);
+}
+
+static void i915_tstamp_clk_calc_update_mult_shift(struct cyclecounter *cc,
+					u32 frequency)
+{
+	clocks_calc_mult_shift(&cc->mult, &cc->shift,
+			frequency, NSEC_PER_SEC, 3600);
+}
+
+static void i915_tstamp_clk_init_base_freq(struct drm_i915_private *dev_priv,
+				struct cyclecounter *cc)
+{
+	cc->read = i915_tstamp_clk_cyclecounter_read;
+	cc->mask = CYCLECOUNTER_MASK(64);
+	i915_tstamp_clk_calc_update_mult_shift(cc,
+			dev_priv->ts_clk_info.timestamp_frequency);
+}
+
+/**
+ * i915_get_syncdevicetime - Callback given to timekeeping code to read
+	device time and sytem clk counter value
+ * @device_time: current device time
+ * @system: system counter value read synchronously with device time
+ * @ctx: context provided by timekeeping code
+ *
+ **/
+static int i915_get_syncdevicetime(ktime_t *device_time,
+					 struct system_counterval_t *system,
+					 void *ctx)
+{
+	struct drm_i915_private *dev_priv = (struct drm_i915_private *)ctx;
+	struct timecounter *tc = &dev_priv->ts_clk_info.tc;
+	struct clocksource *curr_clksource;
+
+	*device_time = ns_to_ktime(timecounter_read(tc));
+
+	curr_clksource = get_current_clocksource();
+	system->cycles = curr_clksource->read(curr_clksource);
+	system->cs = curr_clksource;
+
+	return 0;
+}
+
+static void i915_perf_clock_sync_work(struct work_struct *work)
+{
+	struct drm_i915_private *dev_priv =
+		container_of(work, typeof(*dev_priv),
+		ts_clk_info.clk_sync_work.work);
+	struct system_device_crosststamp *xtstamp =
+			&dev_priv->ts_clk_info.xtstamp;
+	ktime_t last_sys_time = xtstamp->sys_monoraw;
+	ktime_t last_gpu_time = xtstamp->device;
+	ktime_t clk_mono_offset, gpu_time_offset;
+	s64 delta;
+	u32 gpu_freq = dev_priv->ts_clk_info.timestamp_frequency;
+	u32 freq_delta = 0;
+
+	get_device_system_crosststamp(i915_get_syncdevicetime, dev_priv,
+					NULL, xtstamp);
+
+	clk_mono_offset = ktime_sub(xtstamp->sys_monoraw, last_sys_time);
+	gpu_time_offset = ktime_sub(xtstamp->device, last_gpu_time);
+
+	/* delta time in ns */
+	delta = ktime_to_ns(ktime_sub(gpu_time_offset, clk_mono_offset));
+
+	/* If time delta < 1 us, we can assume gpu frequency is correct */
+	if (abs(delta) < NSEC_PER_USEC)
+		goto out;
+
+	/* The two clocks shouldn't deviate more than 1 second during the
+	 * resync period. If this is the case (which may happen due to
+	 * suspend/resume), then don't apply frequency correction, and
+	 * fast forward/rewind the clocks to resync immediately
+	 */
+	if (abs(delta) > NSEC_PER_SEC)
+		goto out;
+
+	/* Calculate frequency delta */
+	freq_delta = abs(delta)*gpu_freq;
+	do_div(freq_delta, ktime_to_ns(clk_mono_offset));
+
+	if (freq_delta == 0)
+		goto out;
+
+	if (delta < 0)
+		freq_delta = -freq_delta;
+
+	dev_priv->ts_clk_info.timestamp_frequency += freq_delta;
+	i915_tstamp_clk_calc_update_mult_shift(&dev_priv->ts_clk_info.cc,
+			dev_priv->ts_clk_info.timestamp_frequency);
+
+	/*
+	 * Get updated device/system times based on corrected frequency.
+	 * Note that this may cause jumps in device time depending on whether
+	 * frequency delta is positive or negative.
+	 * NB: Take care that monotonicity of sample timestamps is maintained
+	 * even with these jumps.
+	 */
+	get_device_system_crosststamp(i915_get_syncdevicetime, dev_priv,
+					NULL, xtstamp);
+
+out:
+	dev_priv->ts_clk_info.clk_offset = ktime_sub(xtstamp->sys_monoraw,
+						xtstamp->device);
+
+	/* We can schedule next synchronization at incrementally higher
+	 * durations, so that the accuracy of our calculated frequency
+	 * can improve over time. The max resync period is arbitrarily
+	 * set as one hour.
+	 */
+	dev_priv->ts_clk_info.resync_period *= 2;
+	if (dev_priv->ts_clk_info.resync_period < MAX_CLK_SYNC_PERIOD)
+		schedule_delayed_work(&dev_priv->ts_clk_info.clk_sync_work,
+			msecs_to_jiffies(dev_priv->ts_clk_info.resync_period));
+}
 
 /*
  * Emit the commands to capture metrics, into the command stream. This function
@@ -411,7 +557,7 @@ static int insert_perf_entry(struct drm_i915_private *dev_priv,
 
 	if (stream->sample_flags & SAMPLE_OA_REPORT)
 		entry_size += dev_priv->perf.oa.oa_buffer.format_size;
-	else if (sample_flags & SAMPLE_TS) {
+	else if (sample_flags & (SAMPLE_TS|SAMPLE_CLK_MONO_RAW)) {
 		/*
 		 * XXX: Since TS data can anyways be derived from OA report, so
 		 * no need to capture it for RCS engine, if capture oa data is
@@ -627,7 +773,7 @@ static void i915_ring_stream_cs_hook(struct i915_perf_stream *stream,
 		ret = i915_ring_stream_capture_oa(req, entry->oa_offset);
 		if (ret)
 			goto err_unref;
-	} else if (sample_flags & SAMPLE_TS) {
+	} else if (sample_flags & (SAMPLE_TS|SAMPLE_CLK_MONO_RAW)) {
 		/*
 		 * XXX: Since TS data can anyways be derived from OA report, so
 		 * no need to capture it for RCS engine, if capture oa data is
@@ -887,7 +1033,14 @@ static int append_sample(struct i915_perf_stream *stream,
 	}
 
 	if (sample_flags & SAMPLE_TS) {
-		if (copy_to_user(buf, &data->ts, I915_PERF_TS_SAMPLE_SIZE))
+		if (copy_to_user(buf, &data->gpu_ts, I915_PERF_TS_SAMPLE_SIZE))
+			return -EFAULT;
+		buf += I915_PERF_TS_SAMPLE_SIZE;
+	}
+
+	if (sample_flags & SAMPLE_CLK_MONO_RAW) {
+		if (copy_to_user(buf, &data->clk_monoraw,
+					I915_PERF_TS_SAMPLE_SIZE))
 			return -EFAULT;
 		buf += I915_PERF_TS_SAMPLE_SIZE;
 	}
@@ -901,6 +1054,27 @@ static int append_sample(struct i915_perf_stream *stream,
 	(*offset) += header.size;
 
 	return 0;
+}
+
+static u64 get_clk_monoraw_from_gpu_ts(struct i915_perf_stream *stream,
+					u64 gpu_ts)
+{
+	struct drm_i915_private *dev_priv = stream->dev_priv;
+	struct timecounter *tc = &dev_priv->ts_clk_info.tc;
+	u64 gpu_time, clk_monoraw;
+
+	gpu_time = cyclecounter_cyc2ns(tc->cc, gpu_ts, tc->mask, &tc->frac);
+
+	clk_monoraw = gpu_time + ktime_to_ns(dev_priv->ts_clk_info.clk_offset);
+
+	/* Ensure monotonicity by clamping the system time in case it goes
+	 * backwards.
+	 */
+	if (clk_monoraw < stream->last_sample_ts)
+		clk_monoraw = stream->last_sample_ts;
+
+	stream->last_sample_ts = clk_monoraw;
+	return clk_monoraw;
 }
 
 static u64 get_gpu_ts_from_oa_report(struct drm_i915_private *dev_priv,
@@ -960,7 +1134,13 @@ static int append_oa_buffer_sample(struct i915_perf_stream *stream,
 
 	/* Derive timestamp from OA report */
 	if (sample_flags & SAMPLE_TS)
-		data.ts = get_gpu_ts_from_oa_report(dev_priv, report);
+		data.gpu_ts = get_gpu_ts_from_oa_report(dev_priv, report);
+
+	if (sample_flags & SAMPLE_CLK_MONO_RAW) {
+		u64 gpu_ts = get_gpu_ts_from_oa_report(dev_priv, report);
+
+		data.clk_monoraw = get_clk_monoraw_from_gpu_ts(stream, gpu_ts);
+	}
 
 	if (sample_flags & SAMPLE_OA_REPORT)
 		data.report = report;
@@ -1478,7 +1658,7 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 		if (ret)
 			return ret;
 
-		if (sample_flags & SAMPLE_TS)
+		if (sample_flags & (SAMPLE_TS|SAMPLE_CLK_MONO_RAW))
 			gpu_ts = get_gpu_ts_from_oa_report(dev_priv, report);
 	}
 
@@ -1500,7 +1680,7 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 		dev_priv->perf.last_tag = node->tag;
 	}
 
-	if (sample_flags & SAMPLE_TS) {
+	if (sample_flags & (SAMPLE_TS|SAMPLE_CLK_MONO_RAW)) {
 		/* If OA sampling is enabled, derive the ts from OA report.
 		 * Else, forward the timestamp collected via command stream.
 		 */
@@ -1508,7 +1688,12 @@ static int append_one_cs_sample(struct i915_perf_stream *stream,
 			gpu_ts = *(u64 *)
 				(dev_priv->perf.command_stream_buf[id].addr +
 					node->ts_offset);
-		data.ts = gpu_ts;
+
+		if (sample_flags & SAMPLE_TS)
+			data.gpu_ts = gpu_ts;
+		if (sample_flags & SAMPLE_CLK_MONO_RAW)
+			data.clk_monoraw = get_clk_monoraw_from_gpu_ts(
+							stream,	gpu_ts);
 	}
 
 	return append_sample(stream, buf, count, offset, &data);
@@ -2299,10 +2484,26 @@ static void i915_ring_stream_enable(struct i915_perf_stream *stream)
 	if (stream->sample_flags & SAMPLE_OA_REPORT) {
 		dev_priv->perf.oa.ops.oa_enable(dev_priv);
 
-		if (stream->sample_flags & SAMPLE_TS)
+		if (stream->sample_flags & (SAMPLE_TS|SAMPLE_CLK_MONO_RAW))
 			dev_priv->perf.oa.last_gpu_ts =
 				I915_READ64_2x32(GT_TIMESTAMP_COUNT,
 					GT_TIMESTAMP_COUNT_UDW);
+	}
+
+	if (stream->sample_flags & SAMPLE_CLK_MONO_RAW) {
+		struct system_device_crosststamp *xtstamp =
+			&dev_priv->ts_clk_info.xtstamp;
+
+		get_device_system_crosststamp(i915_get_syncdevicetime, dev_priv,
+					NULL, xtstamp);
+		dev_priv->ts_clk_info.clk_offset = ktime_sub(xtstamp->sys_monoraw,
+						xtstamp->device);
+
+		if (dev_priv->ts_clk_info.resync_period < MAX_CLK_SYNC_PERIOD)
+			schedule_delayed_work(
+				&dev_priv->ts_clk_info.clk_sync_work,
+				msecs_to_jiffies(
+					dev_priv->ts_clk_info.resync_period));
 	}
 
 	if (stream->cs_mode || dev_priv->perf.oa.periodic)
@@ -2325,6 +2526,8 @@ static void i915_ring_stream_disable(struct i915_perf_stream *stream)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 
+	cancel_delayed_work_sync(&dev_priv->ts_clk_info.clk_sync_work);
+
 	if (stream->cs_mode || dev_priv->perf.oa.periodic)
 		hrtimer_cancel(&dev_priv->perf.poll_check_timer);
 
@@ -2340,7 +2543,7 @@ static void i915_ring_stream_disable(struct i915_perf_stream *stream)
 static u64 oa_exponent_to_ns(struct drm_i915_private *dev_priv, int exponent)
 {
 	return 1000000000ULL * (2ULL << exponent) /
-		dev_priv->perf.oa.timestamp_frequency;
+		dev_priv->ts_clk_info.timestamp_frequency;
 }
 
 static const struct i915_perf_stream_ops i915_oa_stream_ops = {
@@ -2363,7 +2566,8 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 	bool require_cs_mode = props->sample_flags & (SAMPLE_PID |
 						      SAMPLE_TAG);
 	bool cs_sample_data = props->sample_flags & (SAMPLE_OA_REPORT |
-							SAMPLE_TS);
+							SAMPLE_TS |
+							SAMPLE_CLK_MONO_RAW);
 	int ret;
 
 	if ((props->sample_flags & SAMPLE_CTX_ID) && !props->cs_mode) {
@@ -2525,6 +2729,19 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 			require_cs_mode = true;
 	}
 
+	if (props->sample_flags & SAMPLE_CLK_MONO_RAW) {
+		stream->sample_flags |= SAMPLE_CLK_MONO_RAW;
+		stream->sample_size += I915_PERF_TS_SAMPLE_SIZE;
+
+		/*
+		 * NB: it's meaningful to request SAMPLE_CLK_MONO with just CS
+		 * mode or periodic OA mode sampling but we don't allow
+		 * SAMPLE_CLK_MONO without either mode
+		 */
+		if (!require_oa_unit)
+			require_cs_mode = true;
+	}
+
 	if (require_cs_mode && !props->cs_mode) {
 		DRM_ERROR(
 			"PID, TAG or TS sampling require a ring to be specified");
@@ -2549,11 +2766,13 @@ static int i915_ring_stream_init(struct i915_perf_stream *stream,
 
 		/*
 		 * The only time we should allow enabling CS mode if it's not
-		 * strictly required, is if SAMPLE_CTX_ID  or SAMPLE_TS has been
-		 * requested, as they're usable with periodic OA or CS sampling.
+		 * strictly required, is if SAMPLE_CTX_ID, SAMPLE_TS or
+		 * SAMPLE_CLK_MONO_RAW has been requested, as they're usable
+		 * with periodic OA or CS sampling.
 		 */
 		if (!require_cs_mode &&
-		    !(props->sample_flags & (SAMPLE_CTX_ID|SAMPLE_TS))) {
+		    !(props->sample_flags &
+				(SAMPLE_CTX_ID|SAMPLE_TS|SAMPLE_CLK_MONO_RAW))) {
 			DRM_ERROR(
 				"Ring given without requesting any CS specific property");
 			ret = -EINVAL;
@@ -3247,6 +3466,9 @@ static int read_properties_unlocked(struct drm_i915_private *dev_priv,
 		case DRM_I915_PERF_PROP_SAMPLE_TS:
 			props->sample_flags |= SAMPLE_TS;
 			break;
+		case DRM_I915_PERF_PROP_SAMPLE_CLOCK_MONOTONIC_RAW:
+			props->sample_flags |= SAMPLE_CLK_MONO_RAW;
+			break;
 		case DRM_I915_PERF_PROP_MAX:
 			BUG();
 		}
@@ -3394,12 +3616,19 @@ static struct ctl_table dev_root[] = {
 
 void i915_perf_init(struct drm_i915_private *dev_priv)
 {
+	struct i915_clock_info *clk_info = &dev_priv->ts_clk_info;
 	int i;
 
 	if (!(IS_HASWELL(dev_priv) ||
 	      IS_BROADWELL(dev_priv) || IS_CHERRYVIEW(dev_priv) ||
 	      IS_SKYLAKE(dev_priv)))
 		return;
+
+	clk_info->timestamp_frequency = GT_CS_TIMESTAMP_FREQUENCY(dev_priv);
+	clk_info->resync_period = INIT_CLK_SYNC_PERIOD;
+	INIT_DELAYED_WORK(&clk_info->clk_sync_work, i915_perf_clock_sync_work);
+
+	i915_tstamp_clk_init_base_freq(dev_priv, &clk_info->cc);
 
 	hrtimer_init(&dev_priv->perf.poll_check_timer,
 		     CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -3429,8 +3658,6 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 			gen7_oa_buffer_num_samples_fop_unlocked;
 		dev_priv->perf.oa.ops.oa_buffer_get_ctx_id =
 					gen7_oa_buffer_get_ctx_id;
-
-		dev_priv->perf.oa.timestamp_frequency = 12500000;
 
 		dev_priv->perf.oa.oa_formats = hsw_oa_formats;
 
@@ -3462,8 +3689,6 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_bdw;
-
-			dev_priv->perf.oa.timestamp_frequency = 12500000;
 		} else if (IS_CHERRYVIEW(dev_priv)) {
 			dev_priv->perf.oa.ops.enable_metric_set =
 				chv_enable_metric_set;
@@ -3473,8 +3698,6 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x2ce;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_chv;
-
-			dev_priv->perf.oa.timestamp_frequency = 12500000;
 		} else if (IS_SKYLAKE(dev_priv)) {
 			dev_priv->perf.oa.ops.enable_metric_set =
 				skl_enable_metric_set;
@@ -3484,14 +3707,20 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 			dev_priv->perf.oa.ctx_flexeu0_off = 0x3de;
 			dev_priv->perf.oa.n_builtin_sets =
 				i915_oa_n_builtin_metric_sets_skl;
-
-			dev_priv->perf.oa.timestamp_frequency = 12000000;
 		}
 	}
 
 	dev_priv->perf.sysctl_header = register_sysctl_table(dev_root);
 
 	dev_priv->perf.initialized = true;
+}
+
+void i915_perf_init_late(struct drm_i915_private *dev_priv)
+{
+	struct i915_clock_info *clk_info = &dev_priv->ts_clk_info;
+
+	timecounter_init(&clk_info->tc,	&clk_info->cc,
+				ktime_to_ns(ktime_get_boottime()));
 }
 
 void i915_perf_fini(struct drm_i915_private *dev_priv)

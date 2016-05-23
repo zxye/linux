@@ -1088,6 +1088,8 @@ static int i915_driver_init_hw(struct drm_i915_private *dev_priv)
 			DRM_DEBUG_DRIVER("can't enable MSI");
 	}
 
+	i915_perf_init_late(dev_priv);
+
 	return 0;
 
 out_ggtt:
