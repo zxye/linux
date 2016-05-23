@@ -42,6 +42,9 @@
 #include <linux/kref.h>
 #include <linux/pm_qos.h>
 #include <linux/shmem_fs.h>
+#include <linux/timecounter.h>
+#include <linux/clocksource.h>
+#include <linux/timekeeping.h>
 
 #include <drm/drmP.h>
 #include <drm/intel-gtt.h>
@@ -1749,6 +1752,9 @@ struct i915_perf_stream {
 	/* Whether the OA unit is in use */
 	bool using_oa;
 
+	/* monotonic_raw clk timestamp (in ns) for last sample */
+	u64 last_sample_ts;
+
 	/* Enables the collection of HW samples, either in response to
 	 * I915_PERF_IOCTL_ENABLE or implicitly called when stream is
 	 * opened without I915_PERF_FLAG_DISABLED.
@@ -1852,6 +1858,20 @@ struct i915_perf_cs_data_node {
 	u32 ctx_id;
 	u32 pid;
 	u32 tag;
+};
+
+/**
+ * struct i915_clock_info - decribes i915 timestamp clock
+ *
+ */
+struct i915_clock_info {
+	struct cyclecounter cc;
+	struct timecounter tc;
+	struct system_device_crosststamp xtstamp;
+	ktime_t clk_offset; /* Offset (in ns) between monoraw clk and gpu time */
+	u32 timestamp_frequency;
+	u32 resync_period; /* in msecs */
+	struct delayed_work clk_sync_work;
 };
 
 struct drm_i915_private {
@@ -2127,6 +2147,8 @@ struct drm_i915_private {
 
 	struct i915_runtime_pm pm;
 
+	struct i915_clock_info ts_clk_info;
+
 	struct {
 		bool initialized;
 
@@ -2152,7 +2174,6 @@ struct drm_i915_private {
 
 			bool periodic;
 			int period_exponent;
-			int timestamp_frequency;
 
 			int tail_margin;
 
@@ -3687,6 +3708,7 @@ int i915_parse_cmds(struct intel_engine_cs *engine,
 
 /* i915_perf.c */
 extern void i915_perf_init(struct drm_device *dev);
+extern void i915_perf_init_late(struct drm_i915_private *dev_priv);
 extern void i915_perf_fini(struct drm_device *dev);
 
 /* i915_suspend.c */
