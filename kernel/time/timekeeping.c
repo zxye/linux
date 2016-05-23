@@ -1167,6 +1167,18 @@ int get_device_system_crosststamp(int (*get_time_fn)
 EXPORT_SYMBOL_GPL(get_device_system_crosststamp);
 
 /**
+ * get_current_clocksource - Returns the current clocksource in used by tk_core
+ *
+ */
+struct clocksource *get_current_clocksource(void)
+{
+	struct timekeeper *tk = &tk_core.timekeeper;
+
+	return tk->tkr_mono.clock;
+}
+EXPORT_SYMBOL_GPL(get_current_clocksource);
+
+/**
  * do_gettimeofday - Returns the time of day in a timeval
  * @tv:		pointer to the timeval to be set
  *
