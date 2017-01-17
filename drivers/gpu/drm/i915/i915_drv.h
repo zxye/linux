@@ -2038,7 +2038,7 @@ struct i915_oa_ops {
 		    size_t *offset);
 
 	/**
-	 * @oa_buffer_is_empty: Check if OA buffer empty (false positives OK)
+	 * @oa_buffer_check: Check if OA buffer !empty (false positives OK)
 	 *
 	 * This is either called via fops or the poll check hrtimer (atomic
 	 * ctx) without any locks taken.
@@ -2051,7 +2051,7 @@ struct i915_oa_ops {
 	 * here, which will be handled gracefully - likely resulting in an
 	 * %EAGAIN error for userspace.
 	 */
-	bool (*oa_buffer_is_empty)(struct drm_i915_private *dev_priv);
+	bool (*oa_buffer_check)(struct drm_i915_private *dev_priv);
 };
 
 struct drm_i915_private {
@@ -2383,8 +2383,6 @@ struct drm_i915_private {
 			int period_exponent;
 			int timestamp_frequency;
 
-			int tail_margin;
-
 			int metrics_set;
 
 			const struct i915_oa_reg *mux_regs;
@@ -2397,6 +2395,50 @@ struct drm_i915_private {
 				u8 *vaddr;
 				int format;
 				int format_size;
+
+				/*
+				 * Notes about OA pointer accesses covered
+				 * by this lock:
+				 *
+				 * Tail is updated/set in atomic ctx (hrtimer).
+				 * It is reset after a successfull read() to
+				 * request a hrtimer update. It may be reset in
+				 * read() error paths.
+				 *
+				 * Tail timestamp is updated in atomic ctx
+				 * (hrtimer) when a tail is set. It is ignored
+				 * when tail == 0. It is checked while
+				 * read()ing to ensure the tail is old enough
+				 * to trust that the corresponding data is
+				 * visible to the CPU. (This is part of a HW
+				 * workaround, with more details in
+				 * i915_perf.c)
+				 *
+				 * Head is updated after copying reports to
+				 * userspace as part of a read(). It may also
+				 * be reset in read() error paths. It is read
+				 * in atomic ctx (hrtimer) to determine how
+				 * much data is currently stored in the OA
+				 * buffer.
+				 *
+				 * ptr_lock covers all read or write accesses
+				 * to head, tail and tail_timestamp.
+				 */
+				spinlock_t ptr_lock;
+
+				u64 tail_timestamp;
+				u32 tail;
+
+				/**
+				 * Although we can always read back the head
+				 * pointer register, we prefer to avoid
+				 * trusting the HW state, just to avoid any
+				 * risk that some hardware condition could
+				 * somehow bump the head pointer unpredictably
+				 * and cause us to forward the wrong OA buffer
+				 * data to uesrspace.
+				 */
+				u32 head;
 			} oa_buffer;
 
 			u32 gen7_latched_oastatus1;

@@ -205,23 +205,36 @@
 
 #define OA_TAKEN(tail, head)	((tail - head) & (OA_BUFFER_SIZE - 1))
 
-/* There's a HW race condition between OA unit tail pointer register updates and
+/**
+ * DOC: OA Tail Pointer Race
+ *
+ * There's a HW race condition between OA unit tail pointer register updates and
  * writes to memory whereby the tail pointer can sometimes get ahead of what's
- * been written out to the OA buffer so far.
+ * been written out to the OA buffer so far (in terms of what's visible to the
+ * CPU).
  *
- * Although this can be observed explicitly by checking for a zeroed report-id
- * field in tail reports, it seems preferable to account for this earlier e.g.
- * as part of the _oa_buffer_is_empty checks to minimize -EAGAIN polling cycles
- * in this situation.
+ * Although this can be observed explicitly while copying reports to userspace
+ * by checking for a zeroed report-id field in tail reports, we want to account
+ * for this earlier, as part of the _oa_buffer_check to minimize -EAGAIN polling
+ * cycles in this situation - burning CPU cycles.
  *
- * To give time for the most recent reports to land before they may be copied to
- * userspace, the driver operates as if the tail pointer effectively lags behind
- * the HW tail pointer by 'tail_margin' bytes. The margin in bytes is calculated
- * based on this constant in nanoseconds, the current OA sampling exponent
- * and current report size.
+ * The driver tracks the age of tail pointers that are only read at a limited
+ * rate within a hrtimer callback (the same callback that is used for
+ * delivering POLLIN events). By tracking the time when a tail pointer is read
+ * we can ensure new reports have time to become visible to the CPU before
+ * referencing the tail pointer to copy data to userspace.
  *
- * There is also a fallback check while reading to simply skip over reports with
- * a zeroed report-id.
+ * In effect we define a tail pointer that lags the real tail pointer by at
+ * least %OA_TAIL_MARGIN_NSEC nanoseconds.
+ *
+ * Note for posterity: previously the driver used to define an effective tail
+ * pointer that lagged the real pointer by a 'tail margin' measured in bytes
+ * derived from %OA_TAIL_MARGIN_NSEC and the configured sampling frequency.
+ * This was flawed considering that the OA unit may also automatically generate
+ * non-periodic reports (such as on context switch) or the OA unit may be
+ * enabled without any periodic sampling.
+ *
+ * See genX_oa_buffer_check_unlocked() and genX_oa_read() for further details.
  */
 #define OA_TAIL_MARGIN_NSEC	100000ULL
 
@@ -308,27 +321,98 @@ struct perf_open_properties {
 	int oa_period_exponent;
 };
 
-/* NB: This is either called via fops or the poll check hrtimer (atomic ctx)
+/* NB: This is either called as part of a blocking read() or the poll check
+ * hrtimer (atomic ctx)
  *
- * It's safe to read OA config state here unlocked, assuming that this is only
- * called while the stream is enabled, while the global OA configuration can't
- * be modified.
+ * This check code is central to providing a workaround for the OA unit
+ * tail pointer having a race with respect to what data is visible to the CPU.
+ * (See description of OA_TAIL_MARGIN_NSEC for further details.)
  *
- * Note: we don't lock around the head/tail reads even though there's the slim
- * possibility of read() fop errors forcing a re-init of the OA buffer
- * pointers.  A race here could result in a false positive !empty status which
- * is acceptable.
+ * Note: It's safe to read OA config state here unlocked, assuming that this is
+ * only called while the stream is enabled, while the global OA configuration
+ * can't be modified.
  */
-static bool gen7_oa_buffer_is_empty_fop_unlocked(struct drm_i915_private *dev_priv)
+static bool gen7_oa_buffer_check_unlocked(struct drm_i915_private *dev_priv)
 {
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
-	u32 oastatus2 = I915_READ(GEN7_OASTATUS2);
-	u32 oastatus1 = I915_READ(GEN7_OASTATUS1);
-	u32 head = oastatus2 & GEN7_OASTATUS2_HEAD_MASK;
-	u32 tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
+	unsigned long flags;
+	bool ret = false;
 
-	return OA_TAKEN(tail, head) <
-		dev_priv->perf.oa.tail_margin + report_size;
+	/* We have to consider the (unlikely) possibility that read() errors
+	 * could result in an OA buffer reset which might reset the head,
+	 * tail and tail_timestamp.
+	 */
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	/* We throttle tail updates by successful reads, to ensure reads()
+	 * don't always start with a tail pointer that's too recent to trust
+	 * that the corresponding data is visible to the CPU yet.
+	 *
+	 * A successful read will reset tail which is our cue to update it...
+	 */
+	if (dev_priv->perf.oa.oa_buffer.tail == 0) {
+		u32 head = dev_priv->perf.oa.oa_buffer.head;
+
+		u32 oastatus1 = I915_READ(GEN7_OASTATUS1);
+		u32 tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
+
+		/* The tail pointer increases in 64 byte increments,
+		 * not in report_size steps...
+		 */
+		tail &= ~(report_size - 1);
+
+		/* At least wait until we have more that one report before
+		 * updating the tail since we won't update the tail again
+		 * until a successful read which wouldn't ever be possible
+		 * with less data.
+		 */
+		if (OA_TAKEN(tail, head) >= report_size) {
+			struct i915_vma *vma = dev_priv->perf.oa.oa_buffer.vma;
+			u32 gtt_offset = i915_ggtt_offset(vma);
+
+			if (tail >= gtt_offset &&
+			    tail < (gtt_offset + OA_BUFFER_SIZE)) {
+				u64 now = ktime_get_mono_fast_ns();
+
+				dev_priv->perf.oa.oa_buffer.tail = tail;
+				dev_priv->perf.oa.oa_buffer.tail_timestamp = now;
+
+				/* XXX: We don't optimistically report
+				 * available data in this case by returning
+				 * true and hope that OA_TAIL_MARGIN_NSEC
+				 * elapses before the actual read - experience
+				 * from trying this showed that it will usually
+				 * not be ready.
+				 *
+				 * Consider:
+				 * - It takes two hrtimer callbacks to first
+				 *   read a new tail pointer and then for that
+				 *   pointer to age so that we trust the
+				 *   corresponding data.
+				 * - Until userspace reads from an updated tail
+				 *   then we are blocked from updating the tail
+				 *   pointer.
+				 *
+				 * Given the above it takes 10 milliseconds
+				 * (2x hrtimer period) between POLLIN events
+				 * and reads. Potentially we could improve this
+				 * by double buffering the tail pointer.
+				 */
+			} else {
+				DRM_ERROR("Ignoring spurious out of range OA buffer tail pointer = %u\n",
+					  tail);
+			}
+		}
+	} else {
+		u64 now = ktime_get_mono_fast_ns();
+
+		ret = (now - dev_priv->perf.oa.oa_buffer.tail_timestamp) >
+			OA_TAIL_MARGIN_NSEC;
+	}
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	return ret;
 }
 
 /**
@@ -421,8 +505,6 @@ static int append_oa_sample(struct i915_perf_stream *stream,
  * @buf: destination buffer given by userspace
  * @count: the number of bytes userspace wants to read
  * @offset: (inout): the current position for writing into @buf
- * @head_ptr: (inout): the current oa buffer cpu read position
- * @tail: the current oa buffer gpu write position
  *
  * Notably any error condition resulting in a short read (-%ENOSPC or
  * -%EFAULT) will be returned even though one or more records may
@@ -440,57 +522,48 @@ static int append_oa_sample(struct i915_perf_stream *stream,
 static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 				  char __user *buf,
 				  size_t count,
-				  size_t *offset,
-				  u32 *head_ptr,
-				  u32 tail)
+				  size_t *offset)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
 	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
 	u8 *oa_buf_base = dev_priv->perf.oa.oa_buffer.vaddr;
-	int tail_margin = dev_priv->perf.oa.tail_margin;
 	u32 gtt_offset = i915_ggtt_offset(dev_priv->perf.oa.oa_buffer.vma);
 	u32 mask = (OA_BUFFER_SIZE - 1);
+	size_t start_offset = *offset;
 	u32 head;
+	unsigned long flags;
+	u32 tail;
+	u64 tail_timestamp;
 	u32 taken;
+	u64 now;
 	int ret = 0;
 
 	if (WARN_ON(!stream->enabled))
 		return -EIO;
 
-	head = *head_ptr - gtt_offset;
-	tail -= gtt_offset;
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
 
-	/* The OA unit is expected to wrap the tail pointer according to the OA
-	 * buffer size and since we should never write a misaligned head
-	 * pointer we don't expect to read one back either...
+	head = dev_priv->perf.oa.oa_buffer.head;
+	tail = dev_priv->perf.oa.oa_buffer.tail;
+	tail_timestamp = dev_priv->perf.oa.oa_buffer.tail_timestamp;
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+	/* A tail value of zero here means we're still waiting for the
+	 * oa_poll_check_timer_cb() hrtimer callback to give us a pointer
 	 */
-	if (tail > OA_BUFFER_SIZE || head > OA_BUFFER_SIZE ||
-	    head % report_size) {
-		DRM_ERROR("Inconsistent OA buffer pointer (head = %u, tail = %u): force restart\n",
-			  head, tail);
-		dev_priv->perf.oa.ops.oa_disable(dev_priv);
-		dev_priv->perf.oa.ops.oa_enable(dev_priv);
-		*head_ptr = I915_READ(GEN7_OASTATUS2) &
-			GEN7_OASTATUS2_HEAD_MASK;
-		return -EIO;
-	}
-
-
-	/* The tail pointer increases in 64 byte increments, not in report_size
-	 * steps...
-	 */
-	tail &= ~(report_size - 1);
-
-	/* Move the tail pointer back by the current tail_margin to account for
-	 * the possibility that the latest reports may not have really landed
-	 * in memory yet...
-	 */
-
-	if (OA_TAKEN(tail, head) < report_size + tail_margin)
+	if (tail == 0)
 		return -EAGAIN;
 
-	tail -= tail_margin;
+	/* NB: oa_buffer.head/tail include the gtt_offset which we don't want
+	 * while indexing relative to oa_buf_base.
+	 */
+	head &= mask;
 	tail &= mask;
+
+	now = ktime_get_mono_fast_ns();
+	if ((now - tail_timestamp) < OA_TAIL_MARGIN_NSEC)
+		return -EAGAIN;
 
 	for (/* none */;
 	     (taken = OA_TAKEN(tail, head));
@@ -535,7 +608,31 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 		report32[0] = 0;
 	}
 
-	*head_ptr = gtt_offset + head;
+	if (start_offset != *offset) {
+		spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+
+		/* We throttle tail updates based on reading to ensure we don't
+		 * end up starving userspace because the tail pointer is always
+		 * too recent for us to trust that the corresponding data is
+		 * visible to the CPU yet.
+		 *
+		 * This indicates to the hrtimer callback that we need a new
+		 * tail pointer to read from...
+		 */
+		dev_priv->perf.oa.oa_buffer.tail = 0;
+
+		/* We removed the gtt_offset for the copy loop above, indexing
+		 * relative to oa_buf_base so put back here...
+		 */
+		head += gtt_offset;
+
+		I915_WRITE(GEN7_OASTATUS2,
+			   ((head & GEN7_OASTATUS2_HEAD_MASK) |
+			    OA_MEM_SELECT_GGTT));
+		dev_priv->perf.oa.oa_buffer.head = head;
+
+		spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
+	}
 
 	return ret;
 }
@@ -562,21 +659,13 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 			size_t *offset)
 {
 	struct drm_i915_private *dev_priv = stream->dev_priv;
-	int report_size = dev_priv->perf.oa.oa_buffer.format_size;
-	u32 oastatus2;
 	u32 oastatus1;
-	u32 head;
-	u32 tail;
 	int ret;
 
 	if (WARN_ON(!dev_priv->perf.oa.oa_buffer.vaddr))
 		return -EIO;
 
-	oastatus2 = I915_READ(GEN7_OASTATUS2);
 	oastatus1 = I915_READ(GEN7_OASTATUS1);
-
-	head = oastatus2 & GEN7_OASTATUS2_HEAD_MASK;
-	tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
 
 	/* XXX: On Haswell we don't have a safe way to clear oastatus1
 	 * bits while the OA unit is enabled (while the tail pointer
@@ -616,11 +705,7 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 		dev_priv->perf.oa.ops.oa_disable(dev_priv);
 		dev_priv->perf.oa.ops.oa_enable(dev_priv);
 
-		oastatus2 = I915_READ(GEN7_OASTATUS2);
 		oastatus1 = I915_READ(GEN7_OASTATUS1);
-
-		head = oastatus2 & GEN7_OASTATUS2_HEAD_MASK;
-		tail = oastatus1 & GEN7_OASTATUS1_TAIL_MASK;
 	}
 
 	if (unlikely(oastatus1 & GEN7_OASTATUS1_REPORT_LOST)) {
@@ -632,29 +717,7 @@ static int gen7_oa_read(struct i915_perf_stream *stream,
 			GEN7_OASTATUS1_REPORT_LOST;
 	}
 
-	ret = gen7_append_oa_reports(stream, buf, count, offset,
-				     &head, tail);
-
-	/* All the report sizes are a power of two and the
-	 * head should always be incremented by some multiple
-	 * of the report size.
-	 *
-	 * A warning here, but notably if we later read back a
-	 * misaligned pointer we will treat that as a bug since
-	 * it could lead to a buffer overrun.
-	 */
-	WARN_ONCE(head & (report_size - 1),
-		  "i915: Writing misaligned OA head pointer");
-
-	/* Note: we update the head pointer here even if an error
-	 * was returned since the error may represent a short read
-	 * where some some reports were successfully copied.
-	 */
-	I915_WRITE(GEN7_OASTATUS2,
-		   ((head & GEN7_OASTATUS2_HEAD_MASK) |
-		    OA_MEM_SELECT_GGTT));
-
-	return ret;
+	return gen7_append_oa_reports(stream, buf, count, offset);
 }
 
 /**
@@ -679,14 +742,8 @@ static int i915_oa_wait_unlocked(struct i915_perf_stream *stream)
 	if (!dev_priv->perf.oa.periodic)
 		return -EIO;
 
-	/* Note: the oa_buffer_is_empty() condition is ok to run unlocked as it
-	 * just performs mmio reads of the OA buffer head + tail pointers and
-	 * it's assumed we're handling some operation that implies the stream
-	 * can't be destroyed until completion (such as a read()) that ensures
-	 * the device + OA buffer can't disappear
-	 */
 	return wait_event_interruptible(dev_priv->perf.oa.poll_wq,
-					!dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv));
+					dev_priv->perf.oa.ops.oa_buffer_check(dev_priv));
 }
 
 /**
@@ -829,13 +886,23 @@ static void i915_oa_stream_destroy(struct i915_perf_stream *stream)
 static void gen7_init_oa_buffer(struct drm_i915_private *dev_priv)
 {
 	u32 gtt_offset = i915_ggtt_offset(dev_priv->perf.oa.oa_buffer.vma);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
 
 	/* Pre-DevBDW: OABUFFER must be set with counters off,
 	 * before OASTATUS1, but after OASTATUS2
 	 */
 	I915_WRITE(GEN7_OASTATUS2, gtt_offset | OA_MEM_SELECT_GGTT); /* head */
+	dev_priv->perf.oa.oa_buffer.head = gtt_offset;
+
 	I915_WRITE(GEN7_OABUFFER, gtt_offset);
+
 	I915_WRITE(GEN7_OASTATUS1, gtt_offset | OABUFFER_SIZE_16M); /* tail */
+	dev_priv->perf.oa.oa_buffer.tail = 0;
+	dev_priv->perf.oa.oa_buffer.tail_timestamp = ktime_get_mono_fast_ns();
+
+	spin_unlock_irqrestore(&dev_priv->perf.oa.oa_buffer.ptr_lock, flags);
 
 	/* On Haswell we have to track which OASTATUS1 flags we've
 	 * already seen since they can't be cleared while periodic
@@ -1094,12 +1161,6 @@ static void i915_oa_stream_disable(struct i915_perf_stream *stream)
 		hrtimer_cancel(&dev_priv->perf.oa.poll_check_timer);
 }
 
-static u64 oa_exponent_to_ns(struct drm_i915_private *dev_priv, int exponent)
-{
-	return div_u64(1000000000ULL * (2ULL << exponent),
-		       dev_priv->perf.oa.timestamp_frequency);
-}
-
 static const struct i915_perf_stream_ops i915_oa_stream_ops = {
 	.destroy = i915_oa_stream_destroy,
 	.enable = i915_oa_stream_enable,
@@ -1190,19 +1251,8 @@ static int i915_oa_stream_init(struct i915_perf_stream *stream,
 	dev_priv->perf.oa.metrics_set = props->metrics_set;
 
 	dev_priv->perf.oa.periodic = props->oa_periodic;
-	if (dev_priv->perf.oa.periodic) {
-		u32 tail;
-
+	if (dev_priv->perf.oa.periodic)
 		dev_priv->perf.oa.period_exponent = props->oa_period_exponent;
-
-		/* See comment for OA_TAIL_MARGIN_NSEC for details
-		 * about this tail_margin...
-		 */
-		tail = div64_u64(OA_TAIL_MARGIN_NSEC,
-				 oa_exponent_to_ns(dev_priv,
-						   props->oa_period_exponent));
-		dev_priv->perf.oa.tail_margin = (tail + 1) * format_size;
-	}
 
 	if (stream->ctx) {
 		ret = oa_get_render_ctx_id(stream);
@@ -1376,7 +1426,7 @@ static enum hrtimer_restart oa_poll_check_timer_cb(struct hrtimer *hrtimer)
 		container_of(hrtimer, typeof(*dev_priv),
 			     perf.oa.poll_check_timer);
 
-	if (!dev_priv->perf.oa.ops.oa_buffer_is_empty(dev_priv)) {
+	if (dev_priv->perf.oa.ops.oa_buffer_check(dev_priv)) {
 		dev_priv->perf.oa.pollin = true;
 		wake_up(&dev_priv->perf.oa.poll_wq);
 	}
@@ -2066,6 +2116,7 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 	INIT_LIST_HEAD(&dev_priv->perf.streams);
 	mutex_init(&dev_priv->perf.lock);
 	spin_lock_init(&dev_priv->perf.hook_lock);
+	spin_lock_init(&dev_priv->perf.oa.oa_buffer.ptr_lock);
 
 	dev_priv->perf.oa.ops.init_oa_buffer = gen7_init_oa_buffer;
 	dev_priv->perf.oa.ops.enable_metric_set = hsw_enable_metric_set;
@@ -2073,8 +2124,8 @@ void i915_perf_init(struct drm_i915_private *dev_priv)
 	dev_priv->perf.oa.ops.oa_enable = gen7_oa_enable;
 	dev_priv->perf.oa.ops.oa_disable = gen7_oa_disable;
 	dev_priv->perf.oa.ops.read = gen7_oa_read;
-	dev_priv->perf.oa.ops.oa_buffer_is_empty =
-		gen7_oa_buffer_is_empty_fop_unlocked;
+	dev_priv->perf.oa.ops.oa_buffer_check =
+		gen7_oa_buffer_check_unlocked;
 
 	dev_priv->perf.oa.timestamp_frequency = 12500000;
 
