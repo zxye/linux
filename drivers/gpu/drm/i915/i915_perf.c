@@ -632,7 +632,8 @@ static int gen7_append_oa_reports(struct i915_perf_stream *stream,
 		 * copying it to userspace...
 		 */
 		if (report32[0] == 0) {
-			DRM_NOTE("Skipping spurious, invalid OA report\n");
+			if (printk_ratelimit())
+				DRM_NOTE("Skipping spurious, invalid OA report\n");
 			continue;
 		}
 
