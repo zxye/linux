@@ -2101,9 +2101,6 @@ static void gen8_update_reg_state_unlocked(struct intel_engine_cs *engine,
 	int ctx_flexeu0 = dev_priv->perf.oa.ctx_flexeu0_off;
 	int i;
 
-	if (!atomic_read(&ctx->engine[engine->id].oa_state_dirty))
-		return;
-
 	reg_state[ctx_oactxctrl] = i915_mmio_reg_offset(GEN8_OACTXCONTROL);
 	reg_state[ctx_oactxctrl+1] = (dev_priv->perf.oa.period_exponent <<
 				      GEN8_OA_TIMER_PERIOD_SHIFT) |
@@ -2154,7 +2151,28 @@ void i915_oa_update_reg_state(struct intel_engine_cs *engine,
 	 * update the state if the OA unit has been disabled since
 	 * oa_state_dirty was last set.
 	 */
+	if (atomic_read(&ctx->engine[engine->id].oa_state_dirty))
+		gen8_update_reg_state_unlocked(engine, ctx, reg_state);
+}
 
+void i915_oa_init_reg_state(struct intel_engine_cs *engine,
+			    struct i915_gem_context *ctx,
+			    uint32_t *reg_state)
+{
+	struct drm_i915_private *dev_priv = engine->i915;
+
+	if (!dev_priv->perf.initialized)
+		return;
+
+	/* XXX: We don't take a lock here and this may run async with
+	 * respect to stream methods. Notably we don't want to block
+	 * context switches by long i915 perf read() operations.
+	 *
+	 * It's expect to always be safe to read the dev_priv->perf
+	 * state needed here, and expected to be benign to redundantly
+	 * update the state if the OA unit has been disabled since
+	 * oa_state_dirty was last set.
+	 */
 	gen8_update_reg_state_unlocked(engine, ctx, reg_state);
 }
 

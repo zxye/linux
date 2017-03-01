@@ -3587,6 +3587,9 @@ i915_gem_context_lookup_timeline(struct i915_gem_context *ctx,
 
 int i915_perf_open_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file);
+void i915_oa_init_reg_state(struct intel_engine_cs *engine,
+			    struct i915_gem_context *ctx,
+			    uint32_t *reg_state);
 void i915_oa_update_reg_state(struct intel_engine_cs *engine,
 			      struct i915_gem_context *ctx,
 			      uint32_t *reg_state);

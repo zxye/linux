@@ -1901,7 +1901,7 @@ static void execlists_init_reg_state(u32 *regs,
 			make_rpcs(dev_priv));
 	}
 
-	i915_oa_update_reg_state(engine, ctx, regs);
+	i915_oa_init_reg_state(engine, ctx, regs);
 }
 
 static int
