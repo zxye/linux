@@ -799,7 +799,7 @@ struct drm_i915_gem_execbuffer2 {
 /* upper 32 bits of rsvd1 field contain tag */
 #define I915_EXEC_TAG_MASK		(0xffffffff00000000UL)
 #define i915_execbuffer2_get_tag(eb2) \
-	((eb2).rsvd1 & I915_EXEC_TAG_MASK)
+	(((eb2).rsvd1 & I915_EXEC_TAG_MASK) >> 32)
 
 struct drm_i915_gem_pin {
 	/** Handle of the buffer to be pinned. */
